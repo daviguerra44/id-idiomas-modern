@@ -1,0 +1,14 @@
+const fs=require('fs');
+let h=fs.readFileSync('dist/index.html','utf8');
+const metrics='<dl class="legacy-milestones glass" aria-label="A trajetória da ID Idiomas"><div><dt>alunos</dt><dd><small>MAIS DE</small>15.000</dd></div><div><dt>anos de história</dt><dd><small>ID IDIOMAS</small>35</dd></div></dl>';
+const old='<div class="hero-footnote"><span class="status-dot"></span> Metodologia própria. Conexões reais.</div>';
+if(!h.includes(old))throw Error('Hero target missing');
+h=h.replace(old,metrics);
+h=h.replace('<div class="about-stat"><strong>35<span>+</span></strong><span>anos abrindo<br>novas conversas.</span><b>✳</b></div>',metrics.replace('legacy-milestones glass','legacy-milestones about-milestones'));
+h=h.replace('Há mais de 35 anos, uma forma própria de ensinar.<br>Com proximidade, prática e confiança.','Uma história construída com cada aluno.<br>Com proximidade, prática e confiança.');
+h=h.replace('href="integrated.css?v=3"','href="integrated.css?v=4"').replace('src="integrated.js?v=3"','src="integrated.js?v=4"');
+fs.writeFileSync('dist/index.html',h);
+let js=fs.readFileSync('dist/integrated.js','utf8');
+js=js.replace("'Uma história de prática, confiança e transformação.'","'Mais de 15.000 alunos. 35 anos de história.<br>Uma trajetória de prática, confiança e transformação.'");
+fs.writeFileSync('dist/integrated.js',js);
+console.log('History and student milestones highlighted.');
