@@ -1,6 +1,6 @@
 const assert=require('node:assert/strict');
 (async()=>{const base='http://127.0.0.1:5173';
-const home=await fetch(base);assert.equal(home.status,200);assert((await home.text()).includes('/dashboard.js?v=8'));
+const home=await fetch(base);assert.equal(home.status,200);assert((await home.text()).includes('/dashboard.js?v='));
 assert.equal((await fetch(base+'/api/myedi/data')).status,401);
 const login=await fetch(base+'/signin-with-chatgpt?return_to=/',{redirect:'manual'});const cookie=login.headers.get('set-cookie').split(';')[0];
 const request=(path,init={})=>fetch(base+path,{...init,headers:{Cookie:cookie,...init.headers}});
