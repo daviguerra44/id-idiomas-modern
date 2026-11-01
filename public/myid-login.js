@@ -6,7 +6,7 @@ async function request(action,values={}){
  let data;try{data=await response.json()}catch{throw new Error('Não foi possível consultar o MyID. Tente novamente.')}
  if(!response.ok){const error=new Error(data.error||'Não foi possível entrar no MyID.');error.status=response.status;throw error;}return data;
 }
-function controls(enabled){const form=get('#myid-entry-form');if(!form)return;form.querySelectorAll('input,button').forEach(el=>{el.disabled=!enabled});}
+function controls(enabled){const form=get('#myid-entry-form');if(!form)return;form.querySelectorAll('input,button').forEach(el=>{el.disabled=el.id==='myid-entry-submit'?!enabled||busy:busy});}
 function message(text){const node=get('#myid-entry-status');if(node)node.textContent=text;}
 function clearPassword(){const input=get('#myid-entry-password');if(input){input.value='';input.type='password'}const toggle=get('#myid-password-toggle');if(toggle){toggle.setAttribute('aria-pressed','false');toggle.setAttribute('aria-label','Mostrar senha');toggle.textContent='Mostrar';}}
 async function refresh(){
