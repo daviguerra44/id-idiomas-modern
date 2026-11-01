@@ -1,0 +1,9 @@
+const fs=require('fs');
+let html=fs.readFileSync('dist/index.html','utf8');
+html=html.replace('src="app.js?v=3"','src="integrated.js?v=3"');
+html=html.replaceAll('href="https://wa.me/5571983627000" target="_blank" rel="noopener"','href="#/contato"');
+html=html.replaceAll('href="https://wa.me/5571983627000"','href="#/contato"').replaceAll('href="https://wa.me/5571983494988"','href="#/contato"');
+fs.writeFileSync('dist/index.html',html);
+fs.writeFileSync('dist/app.js','// Replaced by integrated.js.\n');
+fs.writeFileSync('README.md',`# ID Idiomas — Experiência integrada\n\nSite estático com navegação interna por hash, interface carmesim e painéis de vidro.\n\n## Conteúdo migrado\n\nCursos e detalhes completos, história, metodologia, ID Connector, três galerias Star Event, vídeos de alunos, quatro e-books PDF originais com leitor e download locais. Blog sem artigos editoriais no site de origem; não foram criados posts fictícios. Vídeos permanecem hospedados no YouTube e são reproduzidos dentro do site.\n\n## My ID\n\nPerfil editável com foto, nome, e-mail e telefone salvos no navegador. Três matrículas e Report Card 1 transcritos das capturas fornecidas pelo usuário. Consulta, impressão e exportação CSV do boletim. Áreas internas para curso, materiais, Evaluation, boletos e contrato.\n\nNão há autenticação acadêmica ativa. Matrículas e notas não são sincronizadas. Nenhum boleto, contrato ou material privado foi disponibilizado. Não há pagamento ou aceite jurídico. A conexão real exige a API ou código do portal acadêmico. O portal informado exige sessão de login. Nenhuma senha foi coletada.\n\nO site deve permanecer privado: contém os dados acadêmicos fornecidos pelo usuário.\n\n## Desenvolvimento\n\nServir a pasta dist em um servidor estático. Importações públicas brutas ficam em source-import, ignorada pelo Git. content.js contém somente conteúdo público estruturado.\n`);
+console.log('Internal navigation and documentation finalized.');

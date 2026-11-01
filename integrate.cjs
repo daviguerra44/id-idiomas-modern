@@ -1,0 +1,13 @@
+const fs=require('fs');
+let html=fs.readFileSync('dist/index.html','utf8');
+html=html.replace('</main><footer>','</main><div id="site-page" hidden></div><footer>');
+html=html.replace('</head>','<link rel="stylesheet" href="integrated.css?v=3"></head>');
+html=html.replace('app.js?v=2','app.js?v=3');
+html=html.replace('<script src="app.js?v=3">','<script src="content.js?v=3"></script><script src="app.js?v=3">');
+html=html.replace(/href="https:\/\/id-idiomas\.com\.br\/([^"]*)"(?: target="_blank" rel="noopener")?/g,(_,slug)=>`href="#/${slug.replace(/\/$/,'')||'my-id'}"`);
+html=html.replaceAll('href="https://www.youtube.com/channel/UCs1XUQzBrCbcIWfMOVf5Pwg" target="_blank" rel="noopener"','href="#/videos"');
+html=html.replace('href="#quem-somos"','href="#/quem-somos"').replace('href="#metodologia"','href="#/metodologia"').replace('href="#cursos"','href="#/cursos"');
+html=html.replace('href="#connector"','href="#/id-connector"').replace('href="#star-event"','href="#/star-event"').replace('href="#conteudos"','href="#/e-books"');
+html=html.replace(/<div class="login-main">[\s\S]*?<\/div><\/dialog>/,`<div class="login-main"><div class="eyebrow">MY ID · SUA ÁREA DO ALUNO</div><h2>Sua jornada continua aqui.</h2><p>Conheça a nova área com as informações das capturas que você enviou.</p><button class="btn red" id="demo-enter">Abrir o My ID <span>↗</span></button><div class="demo-divider">SOBRE ESTA PRÉVIA</div><p>Perfil e preferências são salvos neste navegador. Matrículas e boletim foram transcritos das capturas, sem sincronização com a escola.</p><small>O login real depende da conexão com o sistema acadêmico. Nenhuma senha é solicitada nesta prévia.</small></div></dialog>`);
+fs.writeFileSync('dist/index.html',html);
+console.log('HTML navigation integrated.');
