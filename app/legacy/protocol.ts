@@ -5,7 +5,7 @@ export class LegacyError extends Error {
 }
 export type Enrollment = { id: string; registration: string; title: string; level: string; teacher: string; status: string; links: Record<string, string> };
 export type Lesson = { id: string; title: string; unit: string; sequence: number; path: string };
-export type Report = { number: number; available: boolean; scores: { label: string; value: number }[]; officialGrade: number | null; comment: string };
+export type Report = { number: number; available: boolean; scores: { label: string; value: number }[]; officialGrade: number | null; comment: string; printPath?: string };
 export const clean = (s: string | null | undefined) => (s || '').replace(/\s+/g, ' ').trim();
 const fold = (s: string) => clean(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/:$/, '');
 const doc = (html: string) => parseHTML(html).document;
@@ -28,7 +28,7 @@ export function safePath(raw: string, origin: string): string | null {
   } catch { return null; }
 }
 
-function localLinks(root: ParentNode, origin: string) {
+function localLinks(root: Pick<ParentNode,'querySelectorAll'>, origin: string) {
   return Array.from(root.querySelectorAll('a[href]')).map(a => ({ path: safePath(a.getAttribute('href')!, origin), title: clean(a.textContent), node: a })).filter(x => x.path) as { path: string; title: string; node: Element }[];
 }
 export function isLogin(html: string) { return !!doc(html).querySelector('form[action*="login/authenticate"], input[type="password"]'); }
@@ -38,8 +38,10 @@ export function loginForm(html: string, origin: string) {
     try { const u = new URL(f.getAttribute('action') || '', origin); return u.origin === origin && u.pathname === '/login/authenticate'; } catch { return false; }
   });
   if (!form || (form.getAttribute('method') || 'get').toLowerCase() !== 'post' || !form.querySelector('input[name="username"]') || !form.querySelector('input[name="password"][type="password"]')) throw new LegacyError('LOGIN_FORMAT', 'O formulário de login mudou. Precisamos conferir o formato recebido.');
+  const encoding=(form.getAttribute('enctype')||'application/x-www-form-urlencoded').toLowerCase();
+  if(encoding!=='application/x-www-form-urlencoded')throw new LegacyError('LOGIN_ENCODING','O formato de envio do login mudou e precisa ser confirmado.');
   const body = new URLSearchParams();
-  for (const input of form.querySelectorAll('input[type="hidden"][name]')) body.set(input.getAttribute('name')!, input.getAttribute('value') || '');
+  for (const input of form.querySelectorAll('input[type="hidden"][name]')) body.append(input.getAttribute('name')!, input.getAttribute('value') || '');
   return body;
 }
 
@@ -98,7 +100,7 @@ export function parseFiles(html: string, origin: string) {
 }
 
 const labels = ['Avaliação Diária', 'Presença', 'Teste Oral', 'Teste Escrito', 'Habilidades de Comunicação', 'Dever de Casa'];
-export function parseReports(html: string): Report[] {
+export function parseReports(html: string, origin?: string): Report[] {
   if (isLogin(html)) throw new LegacyError('SESSION_EXPIRED', 'Sua sessão no MyID expirou. Conecte novamente.', 401);
   const root = doc(html), headings = Array.from(root.querySelectorAll('h1,h2,h3,h4,h5,.card-title,.panel-heading')).filter(h => /report\s*card\s*\d/i.test(clean(h.textContent)));
   const result: Report[] = [];
@@ -114,7 +116,8 @@ export function parseReports(html: string): Report[] {
     }
     const text = clean(block.textContent), comment = text.match(/Coment[áa]rios?\s*:\s*(.*?)(?:IMPRIMIR|$)/i)?.[1] || '';
     if (!scores.length && officialGrade === null && !/indisponível|não disponível|ainda não|não foi/i.test(text)) throw new LegacyError('REPORT_FORMAT', 'Não foi possível associar as notas aos critérios. As notas anteriores foram mantidas.');
-    result.push({ number, available: scores.length > 0 || officialGrade !== null, scores, officialGrade, comment: comment.trim() });
+    const printPath=origin?localLinks(block,origin).find(l=>/^\/reportCard\/print\/\d+/.test(l.path))?.path:undefined;
+    result.push({ number, available: scores.length > 0 || officialGrade !== null, scores, officialGrade, comment: comment.trim(),...(printPath?{printPath}:{}) });
   }
   if (!result.length) throw new LegacyError('REPORT_FORMAT', 'Não foi possível identificar os blocos de Report Card. As notas anteriores foram mantidas.');
   return result;
@@ -125,8 +128,9 @@ export function parseReadOnlyDocument(html: string, origin: string) {
   root.querySelectorAll('script,style,nav,header,footer,form,button,input,textarea,select').forEach(el => el.remove());
   const main = root.querySelector('main, .container, .content, body') || root;
   const blocks = Array.from(main.querySelectorAll('h1,h2,h3,h4,p,tr,li')).map(el => ({ type: /^h\d$/.test(el.tagName.toLowerCase()) ? 'heading' : 'text', text: clean(el.textContent) })).filter(b => b.text).slice(0, 300);
-  if (!blocks.length) throw new LegacyError('DOCUMENT_FORMAT', 'Não foi possível interpretar esse documento.');
-  return { blocks, files: parseFiles(html, origin) };
+  const files=parseFiles(html,origin);
+  if (!blocks.length&&!files.length) throw new LegacyError('DOCUMENT_FORMAT', 'Não foi possível interpretar esse documento.');
+  return { blocks, files };
 }
 
 export type CookieJar = Record<string, string>;
@@ -145,11 +149,11 @@ export class LegacyClient {
     }
     if (Object.keys(this.jar).length > 20) throw new LegacyError('COOKIE_LIMIT', 'O portal retornou uma sessão incompatível.');
   }
-  async request(path: string, options: { method?: 'GET' | 'POST'; body?: URLSearchParams; login?: boolean } = {}) {
+  async request(path: string, options: { method?: 'GET' | 'POST'; body?: URLSearchParams; login?: boolean; logout?: boolean } = {}) {
     let target = path, method = options.method || 'GET', body = options.body;
     for (let i = 0; i < 5; i++) {
       const safe = safePath(target, this.origin), loginPath = options.login && /^(?:\/|\/login\/[\w-]+)$/.test(target);
-      if (!safe && !loginPath) throw new LegacyError('PATH_BLOCKED', 'O portal indicou um endereço fora do escopo da integração.');
+      if (!safe && !loginPath && !(options.logout&&target==='/logout/index'&&method==='GET')) throw new LegacyError('PATH_BLOCKED', 'O portal indicou um endereço fora do escopo da integração.');
       const headers: Record<string, string> = { Accept: 'text/html,application/pdf;q=0.9' };
       const cookie = Object.entries(this.jar).map(([k,v]) => k + '=' + v).join('; '); if (cookie) headers.Cookie = cookie;
       if (body) { headers['Content-Type'] = 'application/x-www-form-urlencoded'; headers.Origin = this.origin; headers.Referer = this.origin + '/'; }
@@ -163,6 +167,8 @@ export class LegacyClient {
         const next = new URL(location, this.origin + target);
         if (next.origin !== this.origin) throw new LegacyError('REDIRECT_BLOCKED', 'O portal redirecionou para um endereço fora da integração.');
         target = next.pathname + next.search;
+        if(options.logout){if(next.pathname==='/'||next.pathname.startsWith('/login/'))return response;throw new LegacyError('LOGOUT_UNCONFIRMED','O portal não confirmou o encerramento da sessão.');}
+        if(options.login&&method==='POST'&&next.pathname.startsWith('/login/')&&next.searchParams.get('login_error')==='1')throw new LegacyError('LOGIN_FAILED','Usuário ou senha não reconhecidos pelo MyID.',401);
         if (!options.login && /^\/login(?:\/|$)/.test(target)) throw new LegacyError('SESSION_EXPIRED', 'Sua sessão no MyID expirou. Conecte novamente.', 401);
         if (response.status === 303 || [301,302].includes(response.status) && method === 'POST') { method = 'GET'; body = undefined; }
         continue;
@@ -176,20 +182,31 @@ export class LegacyClient {
     throw new LegacyError('REDIRECT_LIMIT', 'O portal não concluiu o redirecionamento.');
   }
   async html(path: string, options: Parameters<LegacyClient['request']>[1] = {}) {
-    const response = await this.request(path, options), type = response.headers.get('content-type') || '';
-    if (!type.includes('text/html')) throw new LegacyError('HTML_EXPECTED', 'O formato recebido não corresponde à página esperada.');
-    const text = new TextDecoder('utf-8').decode(await boundedBody(response, 2 * 1024 * 1024));
-    return text;
+    return decodeHtml(await this.request(path, options));
   }
   async login(username: string, password: string) {
     const form = loginForm(await this.html('/', { login: true }), this.origin);
     form.set('username', username); form.set('password', password);
     const landing = await this.html('/login/authenticate', { method: 'POST', body: form, login: true });
     if (isLogin(landing) || !this.jar.JSESSIONID) throw new LegacyError('LOGIN_FAILED', 'Usuário ou senha não reconhecidos pelo MyID.', 401);
-    const path = findProfilePath(landing, this.origin);
-    const profile = parseProfile(path ? await this.html(path) : landing, this.origin);
-    return { ...profile, profilePath: path || profile.profilePath || '/perfil' };
+    let page=landing,path=findProfilePath(page,this.origin);
+    if(path)page=await this.html(path);
+    let profile;
+    try{profile=parseProfile(page,this.origin);}catch(error){
+      if(!(error instanceof LegacyError)||error.code!=='PROFILE_FORMAT')throw error;
+      page=await this.html('/perfil/home');path=findProfilePath(page,this.origin);
+      profile=parseProfile(path?await this.html(path):page,this.origin);
+    }
+    return { ...profile, profilePath: path || profile.profilePath || '/perfil/home' };
   }
+  async logout(){const response=await this.request('/logout/index',{logout:true});await response.body?.cancel();this.jar={};return {requested:true};}
+}
+export async function decodeHtml(response:Response){
+  const type=response.headers.get('content-type')||'';
+  if(!/^text\/html\b/i.test(type))throw new LegacyError('HTML_EXPECTED','O formato recebido não corresponde à página esperada.');
+  const charset=type.match(/charset\s*=\s*["']?([^;\s"']+)/i)?.[1]||'utf-8';
+  const bytes=await boundedBody(response,2*1024*1024);
+  try{return new TextDecoder(charset).decode(bytes);}catch{throw new LegacyError('CHARSET_UNSUPPORTED','A codificação da página precisa ser verificada.');}
 }
 export async function boundedBody(response: Response, max: number) {
   if (Number(response.headers.get('content-length')) > max) throw new LegacyError('SIZE_LIMIT', 'O arquivo excede o limite permitido.');

@@ -1,0 +1,166 @@
+<html>
+
+<head>
+  <title>
+    Login
+  </title>
+  <style type="text/css" media="screen">
+    html,
+    body {
+      background-color: #e7363b;
+      height: 100%;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+
+    .page {
+      display: table;
+      width: 400px;
+      height: 85%;
+      margin: auto;
+    }
+
+    .corpo {
+      display: table-cell;
+      vertical-align: middle;
+      text-align: center;
+      padding: 5%;
+    }
+
+    .logo {
+      width: 60%;
+      display: inline-block;
+    }
+
+    .imagem-logo-bar{
+      height: 42px;
+      float: left;
+    }
+    .imagem-nome-bar{
+      height: 32px;
+      float: left;
+      margin-left: 20px;
+      margin-top: 5px;
+    }
+
+    #loginForm {
+      margin-top: 30px;
+    }
+
+    .caixa-campos {
+      background-color: #fff;
+      margin: 0 auto;
+      height: 100px;
+      border-radius: 10px;
+      padding: 15px;
+    }
+
+    .caixa-campos input {
+      width: 100%;
+      font-size: 16px;
+      height: 48px;
+      background-color: #fff;
+      border: none;
+      padding-left: 12px;
+      margin-left: -6px;
+    }
+
+    .caixa-campos input:focus {
+      outline: none;
+    }
+
+    #username {
+      border-bottom: 1px solid #cdcdcd;
+    }
+
+    .botao {
+      background-color:#ff675c;
+      width: 100%;
+      margin-top: 25px;
+      height: 50px;
+      border: none;
+      color: #fff;
+      font-size: 18px;
+      border-radius: 10px;
+      cursor: pointer;
+    }
+
+    .alert {
+      padding: 20px;
+      background-color: #f44336;
+      color: white;
+      position: absolute;
+      top: 0;
+      right: 0;
+      display: none;
+    }
+
+    .closebtn {
+      margin-left: 15px;
+      color: white;
+      font-weight: bold;
+      float: right;
+      font-size: 22px;
+      line-height: 20px;
+      cursor: pointer;
+      transition: 0.3s;
+    }
+
+    .closebtn:hover {
+      color: black;
+    }
+    #remember_me_holder{
+      color: #ffffff;     
+    }
+    .link-redefinir{
+      color: #ffffff;
+      text-decoration: none;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="page">
+    <div class="corpo">
+      <div class="logo">
+        <img src="/assets/icone-id-875c47be8b79d05fdd615533d4e7e49c.png" class="imagem-logo-bar"/>
+        <img src="/assets/nome-id-3e8e2699f46c8ff2555e85239157137b.png" class="imagem-nome-bar"/>
+      </div>
+
+      <form action="/login/authenticate" method='POST' id='loginForm' data-ajax="false" autocomplete='off'>
+
+        <div class="caixa-campos">
+          <input type="text" class="text_" name="username" id="username" placeholder="Usuário ou e-mail"/>
+          <input type="password" class="text_" name="password" id="password"  placeholder="Senha" />
+        </div>
+
+        <p id="remember_me_holder">
+          <input type="checkbox" class="chk" name="remember-me" id="remember_me" />
+          <label for="remember_me">
+            Manter Conectado
+          </label>
+        </p>
+        <button class="botao" type="submit">Entrar</button>
+
+        <p>
+          <a class="link-redefinir" href="/redefinirSenha">Esquei minha senha</a>
+        </p>
+
+      </form>
+      <div id="alert" class="alert">
+        <span class="closebtn" onclick="this.parentElement.style.display='none';">&times;</span>
+        <strong>Atenção:</strong> 
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      document.forms['loginForm'].elements["username"].focus();
+    })();
+  </script>
+
+
+</body>
+
+</html>

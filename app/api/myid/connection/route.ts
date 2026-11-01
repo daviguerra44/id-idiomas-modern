@@ -23,7 +23,7 @@ export async function POST(request:Request){
     }
     if(payload.action==='start')return json(await start(access.ownerId));
     if(payload.action==='step')return json(await step(access.ownerId));
-    if(payload.action==='disconnect'){await disconnect(access.ownerId);return json({connected:false});}
+    if(payload.action==='disconnect')return json(await disconnect(access.ownerId));
     return json({error:'Ação inválida.'},400);
   }catch(error){return failure(error);}
 }

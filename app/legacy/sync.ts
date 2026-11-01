@@ -1,10 +1,10 @@
 import { env } from 'cloudflare:workers';
 import seed from '../../site/seed.json';
 import { normalizeMyIDState } from '../myid-state';
-import { boundedBody, LegacyClient, LegacyError, parseProfile, parseLessons, parseFiles, parseReports, parseReadOnlyDocument, type CookieJar, type Enrollment, type Lesson } from './protocol';
+import { boundedBody, decodeHtml, LegacyClient, LegacyError, parseProfile, parseLessons, parseFiles, parseReports, parseReadOnlyDocument, type CookieJar, type Enrollment, type Lesson } from './protocol';
 import { seal, unseal, stableId, validKey } from './vault';
 
-type Job = { kind: 'course' | 'lesson' | 'file' | 'report' | 'evaluation' | 'boleto' | 'contract'; path: string; enrollment: string; lesson?: Lesson; name?: string; lessonKey?: string };
+type Job = { kind: 'course' | 'lesson' | 'file' | 'report' | 'evaluation' | 'boleto' | 'contract' | 'print'; path: string; enrollment: string; lesson?: Lesson; name?: string; lessonKey?: string; documentKind?:string };
 type Session = { jar: CookieJar; profilePath: string; enrollments: Enrollment[]; queue: Job[]; completed: number; total: number; imported: number; warnings: string[]; startedAt: string; finishedAt?: string };
 type Row = { sealed: string; expires_at: number; failures: number; retry_at: number };
 const now = () => new Date().toISOString();
@@ -116,22 +116,23 @@ export async function step(owner: string) {
         const id=await stableId(owner+'|'+job.path), name=(job.name||'Material.pdf').replace(/[\r\n"\\]/g,'_').slice(0,120);
         await config.bucket.put(owner+'/'+id,bytes,{httpMetadata:{contentType:'application/pdf'},customMetadata:{name}});
         await updateAcademic(owner,s=>{
-          const cId=courseId(s,enrollment), materialId='legacy-pdf-'+id+'-'+(job.lessonKey||enrollment.id);
+          const cId=courseId(s,enrollment), materialId='legacy-pdf-'+id+'-'+(job.lessonKey||enrollment.id+'-'+(job.documentKind||'document'));
           const material={id:materialId,courseId:cId,lessonId:job.lessonKey||'',title:job.name||'Material da aula',type:'pdf',url:'/api/myedi/files/'+id,section:job.lesson?.title||'Documentos',category:job.lessonKey?'course':'document',source:'myid',syncedAt:now(),archived:false};
           const old=s.materials.find((m:any)=>m.id===materialId);if(old)Object.assign(old,material);else s.materials.push(material);
           if(job.lessonKey){const lesson=s.lessons.find((l:any)=>l.id===job.lessonKey);if(lesson&&!lesson.materialIds.includes(materialId))lesson.materialIds.push(materialId);}
+          if(job.documentKind){const c=s.courses.find((c:any)=>c.id===cId);if(c){c.documents??={};const document=c.documents[job.documentKind]??={blocks:[],materialIds:[]};document.materialIds??=[];if(!document.materialIds.includes(materialId))document.materialIds.push(materialId);document.syncedAt=now();}}
         });session.imported++;
       } else {
-        const response=await client.request(job.path), type=response.headers.get('content-type')||'';
+        const response=await client.request(job.path), type=(response.headers.get('content-type')||'').toLowerCase();
         if(type.includes('application/pdf')){
           await response.body?.cancel();
           if(job.kind==='lesson')enqueue(session,[{...job,kind:'file',name:job.lesson?.title||'Material da aula'}]);
-          else if(['boleto','contract','evaluation'].includes(job.kind))enqueue(session,[{...job,kind:'file',name:job.kind==='boleto'?'Boleto.pdf':job.kind==='contract'?'Contrato.pdf':'Evaluation.pdf'}]);
+          else if(['boleto','contract','evaluation','print'].includes(job.kind))enqueue(session,[{...job,kind:'file',documentKind:job.documentKind||job.kind,name:job.kind==='boleto'?'Boleto.pdf':job.kind==='contract'?'Contrato.pdf':job.kind==='print'?'Report Card.pdf':'Evaluation.pdf'}]);
           else throw new LegacyError('HTML_EXPECTED','O formato da página mudou.');
           if(job.kind==='lesson')await upsertLesson(owner,enrollment,job);
         }else{
           if(!type.includes('text/html'))throw new LegacyError('HTML_EXPECTED','O formato da página mudou.');
-          const html=new TextDecoder().decode(await boundedBody(response,2*1024*1024));
+          const html=await decodeHtml(response);
           if(job.kind==='course'){
             const lessons=parseLessons(html,config.origin,enrollment.id);if(!lessons.length)throw new LegacyError('LESSONS_NOT_FOUND','Nenhuma aula foi identificada no curso '+(enrollment.registration||enrollment.id)+'. Os materiais existentes foram mantidos.');
             enqueue(session,lessons.map(l=>({kind:'lesson',path:l.path,enrollment:enrollment.id,lesson:l,lessonKey:'legacy-lesson-'+enrollment.id+'-'+l.id})));
@@ -140,12 +141,15 @@ export async function step(owner: string) {
             await upsertLesson(owner,enrollment,job);
             enqueue(session,files.map(f=>({...job,kind:'file',path:f.path,name:job.lesson!.title+' · '+f.name})));
           }else if(job.kind==='report'){
-            const reports=parseReports(html);
-            await updateAcademic(owner,s=>{const c=s.courses.find((c:any)=>c.id===courseId(s,enrollment));if(!c)return;c.reportCards=reports;c.syncedAt=now();const r=reports.filter(r=>r.available).at(-1);c.scores=r?.scores||[];c.officialGrade=r?.officialGrade??null;c.comment=r?.comment||''; });
+            const reports=parseReports(html,config.origin);
+            enqueue(session,reports.filter(r=>r.available&&r.printPath).map(r=>({kind:'print',path:r.printPath!,enrollment:enrollment.id,documentKind:'report-print-'+r.number})));
+            const normalized=reports.map(({printPath,...r})=>r);
+            await updateAcademic(owner,s=>{const c=s.courses.find((c:any)=>c.id===courseId(s,enrollment));if(!c)return;c.reportCards=normalized;c.syncedAt=now();const r=normalized.filter(r=>r.available).at(-1);c.scores=r?.scores||[];c.officialGrade=r?.officialGrade??null;c.comment=r?.comment||''; });
           }else{
             const parsed=parseReadOnlyDocument(html,config.origin);
-            await updateAcademic(owner,s=>{const c=s.courses.find((c:any)=>c.id===courseId(s,enrollment));if(c){c.documents??={};c.documents[job.kind]={blocks:parsed.blocks,syncedAt:now()};}});
-            enqueue(session,parsed.files.map(f=>({kind:'file',path:f.path,enrollment:enrollment.id,name:f.name})));
+            const documentKind=job.documentKind||job.kind;
+            await updateAcademic(owner,s=>{const c=s.courses.find((c:any)=>c.id===courseId(s,enrollment));if(c){c.documents??={};c.documents[documentKind]={blocks:parsed.blocks,materialIds:c.documents[documentKind]?.materialIds||[],syncedAt:now()};}});
+            enqueue(session,parsed.files.map(f=>({kind:'file',path:f.path,enrollment:enrollment.id,name:f.name,documentKind})));
           }
         }
       }
@@ -163,10 +167,18 @@ async function upsertLesson(owner:string,enrollment:Enrollment,job:Job){
   await updateAcademic(owner,s=>{const item={id:job.lessonKey,courseId:courseId(s,enrollment),title:lesson.title,unit:lesson.unit,sequence:lesson.sequence,date:'',description:'',materialIds:[],source:'myid',syncedAt:now(),archived:false};const old=s.lessons.find((l:any)=>l.id===item.id);if(old)Object.assign(old,{...item,materialIds:old.materialIds});else s.lessons.push(item);});
 }
 export async function disconnect(owner:string) {
-  if(!env.DB)return;
-  const existing=await env.DB.prepare('SELECT locked_until FROM myid_legacy_session WHERE owner_id=?').bind(owner).first<{locked_until:number}>();
-  if(existing&&existing.locked_until>=Date.now())throw new LegacyError('SYNC_BUSY','Aguarde a operação atual terminar antes de desconectar.',409);
-  // Remove the encrypted local session; do not perform an unverified upstream logout.
-  const result=await env.DB.prepare('UPDATE myid_legacy_session SET sealed=\'\',expires_at=0,locked_until=0,updated_at=? WHERE owner_id=? AND locked_until<?').bind(now(),owner,Date.now()).run();
-  if(existing&&!result.meta.changes)throw new LegacyError('SYNC_BUSY','Uma operação foi iniciada em outra janela. Tente desconectar novamente.',409);
+  if(!env.DB)return {connected:false,remoteLogout:'not_attempted'};
+  const existing=await env.DB.prepare('SELECT sealed,expires_at,locked_until FROM myid_legacy_session WHERE owner_id=?').bind(owner).first<Row&{locked_until:number}>();
+  if(!existing)return {connected:false,remoteLogout:'not_attempted'};
+  const result=await env.DB.prepare('UPDATE myid_legacy_session SET locked_until=? WHERE owner_id=? AND locked_until<?').bind(Date.now()+90000,owner,Date.now()).run();
+  if(!result.meta.changes)throw new LegacyError('SYNC_BUSY','Aguarde a operação atual terminar antes de desconectar.',409);
+  let remoteLogout='not_attempted',warning='';
+  try{
+    if(existing.sealed&&existing.expires_at>Date.now()&&connectionStatus().configured){
+      const config=configuration(),session=await unseal<Session>(existing.sealed,config.key,owner);
+      await new LegacyClient(config.origin,session.jar).logout();remoteLogout='requested';
+    }
+  }catch{remoteLogout='unconfirmed';warning='A conexão local foi encerrada, mas o encerramento no portal original não pôde ser confirmado.';}
+  finally{await env.DB.prepare('UPDATE myid_legacy_session SET sealed=\'\',expires_at=0,locked_until=0,updated_at=? WHERE owner_id=?').bind(now(),owner).run();}
+  return {connected:false,remoteLogout,...(warning?{warning}:{})};
 }

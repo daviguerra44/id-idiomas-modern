@@ -27,7 +27,7 @@ Nenhum desses valores foi criado ou ativado na publicação desta implementaçã
 - `connect`, com `username` e `password`: lê o formulário original, preserva campos ocultos, envia o POST e valida a página de matrículas. Cookie ou status 302 isolado não confirmam login.
 - `start`: relê o perfil autorizado, prepara a fila e atualiza as matrículas encontradas.
 - `step`: processa um item da fila. Cursos descobrem aulas; aulas descobrem anexos; arquivos são validados pelo cabeçalho `%PDF-` antes de serem salvos no R2.
-- `disconnect`: remove a sessão local criptografada. Não realiza logout remoto não validado.
+- `disconnect`: solicita `GET /logout/index` quando há sessão ativa e canal configurado; sempre remove a sessão local. Retorna `remoteLogout: requested`, `unconfirmed` ou `not_attempted`. Uma solicitação aceita não é apresentada como prova de invalidação da sessão no servidor original.
 
 O importador não aceita URL, matrícula ou ID de arquivo fornecido pelo navegador. Os recursos são derivados exclusivamente dos links obtidos no perfil e nas aulas autenticadas. Cada etapa é idempotente. A interface faz consultas sequenciais com pausa de 650 ms e permite retomar a fila.
 
@@ -40,6 +40,20 @@ PDFs são guardados no binding R2 existente. Cada recurso físico tem um identif
 ## Boletins e documentos
 
 `Grade` é preservada como nota oficial: nenhum peso é inferido. Report Cards são separados, incluindo estados indisponíveis e nota zero. O painel permite selecionar o boletim. Evaluation, contrato e financeiro são convertidos em blocos de texto seguros; scripts, formulários e interações do portal não são reproduzidos. Não há aceitação contratual, pagamento ou edição remota de perfil.
+
+Links `/reportCard/print/{id}?u=0` são extraídos de cada bloco de boletim, sem derivar o ID da matrícula. A importação preserva a versão de impressão como texto estruturado ou PDF, conforme o Content-Type recebido. PDFs de Evaluation, boleto e contrato são associados a `course.documents[kind].materialIds` e abertos pelo visualizador existente.
+
+A rota interna de Avaliações apresenta Evaluation, sem reutilizar o Report Card. Não houve reconstrução do layout. O painel também trata boletim com nota final oficial e critérios ainda indisponíveis.
+
+## Evidências e diagnóstico
+
+O teste lê `tests/fixtures/myid-login-public.html`, cópia do formulário público capturado. Ele confirma os nomes dos campos e a ação do formulário. O encoding utilizado pelo adaptador segue o formulário HTML padrão, sem afirmar que houve captura do POST autenticado no Network. Um enctype diferente é rejeitado para revisão. Campos ocultos repetidos são preservados.
+
+O cliente reconhece redirecionamento de erro `/login/auth?login_error=1`, trata `302` e `JSESSIONID` como insuficientes para provar login e verifica o perfil autenticado. Se a página de chegada não contiver perfil, consulta a rota identificada `/perfil/home` antes de procurar o link de perfil.
+
+Para repetir exclusivamente o diagnóstico de transporte: `node scripts/check-myid-tls.mjs`. O script valida o certificado e o hostname pelo mecanismo padrão do Node, usa SNI e não envia requisições HTTP, cookies ou senhas. Uma falha descreve somente esse teste, não prova ausência permanente de HTTPS.
+
+As consultas de todas as rotas foram exercitadas com transporte simulado. Somente a estrutura do formulário público tem HTML capturado; os parsers autenticados continuam pendentes de confirmação com respostas reais.
 
 ## Verificação pendente
 

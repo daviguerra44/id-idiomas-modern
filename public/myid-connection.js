@@ -19,7 +19,7 @@ function draw(host,status){
  paint(panel,status);
  panel.querySelector('#myid-sync-start').onclick=()=>run(host,panel,status.pending>0);
  panel.querySelector('#myid-sync-pause').onclick=()=>{paused=true;panel.querySelector('#myid-connection-message').textContent='Pausando após concluir o item atual…';};
- panel.querySelector('#myid-sync-disconnect').onclick=async()=>{if(busy)return;try{await request('disconnect');draw(host,await request())}catch(error){panel.querySelector('#myid-connection-message').textContent=error.message}};
+ panel.querySelector('#myid-sync-disconnect').onclick=async()=>{if(busy)return;try{const result=await request('disconnect');draw(host,await request());if(result.warning){const message=host.querySelector('#myid-connection-message');if(message)message.textContent=result.warning}}catch(error){panel.querySelector('#myid-connection-message').textContent=error.message}};
 }
 function paint(panel,data){
  panel.querySelector('#myid-progress').max=data.total||1;panel.querySelector('#myid-progress').value=data.completed||0;
