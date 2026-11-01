@@ -1,0 +1,13 @@
+const fs=require('fs');
+let html=fs.readFileSync('dist/index.html','utf8');
+const menu=html.match(/<button class="menu"[^>]*>[\s\S]*?<\/button>/)?.[0];
+const myid=html.match(/<button class="myid"[^>]*>[\s\S]*?<\/button>/)?.[0];
+if(!menu||!myid||!html.includes('</nav></header>'))throw Error('Expected header structure missing');
+html=html.replace(menu,'').replace(myid,'').replace('</nav></header>','</nav><div class="header-actions">'+myid+menu+'</div></header>');
+html=html.replace('href="contrast.css?v=6"','href="contrast.css?v=7"');
+fs.writeFileSync('dist/index.html',html);
+const {parseHTML}=require('../id-validation/node_modules/linkedom');
+const {document}=parseHTML(html);
+if(document.querySelector('header nav .myid')||!document.querySelector('header .header-actions .myid'))throw Error('My ID must be outside collapsed navigation');
+if(document.querySelectorAll('header .myid').length!==1)throw Error('Expected one My ID button');
+console.log('My ID is permanently outside the collapsible navigation.');
