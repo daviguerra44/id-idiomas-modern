@@ -57,7 +57,7 @@ As consultas de todas as rotas foram exercitadas com transporte simulado. Soment
 
 ## Entrada com usuário e senha
 
-O diálogo de entrada do site usa os campos `username` e `password` para a ação `connect` do adaptador existente. Os campos permitem digitar localmente, mas o envio só é habilitado após verificar a configuração HTTPS pelo backend. Enquanto o canal estiver pendente, o botão continua desativado e pressionar Enter também não envia credenciais. Os campos são bloqueados temporariamente apenas durante uma autenticação em andamento. O formulário usa `method="dialog"` para impedir uma submissão HTTP nativa caso o JavaScript não carregue.
+O diálogo de entrada do site usa os campos `username` e `password` para a ação `connect` do adaptador existente. Os campos e o botão de confirmar ficam disponíveis. Confirmar primeiro consulta a disponibilidade do canal sem enviar credenciais; se a configuração segura estiver pendente, exibe erro visível e não executa o POST com a senha. Quando o canal está configurado, segue com a autenticação. Controles são bloqueados temporariamente durante a operação para impedir duplicidade. O formulário usa `method="dialog"` para impedir uma submissão HTTP nativa caso o JavaScript não carregue.
 
 O frontend não persiste a senha e a limpa após sucesso, erro e fechamento do diálogo. Um login bem-sucedido abre a conexão de importação, evitando apresentar os dados antigos como se já fossem dados recém-importados. A sessão original nunca é devolvida ao frontend. O acesso à prévia continua protegido pela autenticação da plataforma, com o visitante convidado limitado à visualização.
 
