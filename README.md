@@ -1,8 +1,8 @@
-# ID Idiomas / MyEDI
+# ID Idiomas / MyID
 
 Interface pública e plataforma de estudos em Vinext, Cloudflare D1 e R2. A publicação deve permanecer privada: dados acadêmicos foram fornecidos e autorizados pelo usuário.
 
-## MyEDI
+## MyID
 
 Visão geral com matrícula, professora, próxima aula recorrente, desempenho por critério, média calculada, lembretes e biblioteca. Perfil e preferências persistentes. Materiais com pesquisa, formato, curso, favoritos, conclusão e anotações. PDFs com leitor e download.
 

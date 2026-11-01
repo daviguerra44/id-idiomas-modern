@@ -5,7 +5,7 @@ export const dynamic='force-dynamic';
 const json=(data:unknown,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store'}});
 async function identity(){ const user=await getChatGPTUser(); return user?.userId; }
 export async function GET(){
- const owner=await identity();if(!owner)return json({error:'Entre na sua conta para acessar o MyEDI.'},401);
+ const owner=await identity();if(!owner)return json({error:'Entre na sua conta para acessar o MyID.'},401);
  if(!env.DB)return json({error:'Banco de dados indisponível.'},503);
  await env.DB.prepare('INSERT OR IGNORE INTO myedi_state (owner_id,document,revision,updated_at) VALUES (?,?,0,?)').bind(owner,JSON.stringify(seed),new Date().toISOString()).run();
  const row=await env.DB.prepare('SELECT document,revision,updated_at FROM myedi_state WHERE owner_id=?').bind(owner).first<{document:string,revision:number,updated_at:string}>();

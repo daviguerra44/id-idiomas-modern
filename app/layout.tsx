@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "ID Idiomas · MyEDI",
+  title: "ID Idiomas · MyID",
   description: "Cursos, materiais e desempenho na ID Idiomas.",
   icons: {
     icon: "/favicon.svg",
