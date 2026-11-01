@@ -55,6 +55,12 @@ Para repetir exclusivamente o diagnóstico de transporte: `node scripts/check-my
 
 As consultas de todas as rotas foram exercitadas com transporte simulado. Somente a estrutura do formulário público tem HTML capturado; os parsers autenticados continuam pendentes de confirmação com respostas reais.
 
+## Entrada com usuário e senha
+
+O diálogo de entrada do site agora usa os campos `username` e `password` para a ação `connect` do adaptador existente. O endpoint intermediário é consultado antes de habilitar os campos. Enquanto a configuração HTTPS não estiver validada, ambos os campos e o envio permanecem desativados, inclusive antes do carregamento do JavaScript.
+
+O frontend não persiste a senha e a limpa após sucesso, erro e fechamento do diálogo. Um login bem-sucedido abre a conexão de importação, evitando apresentar os dados antigos como se já fossem dados recém-importados. A sessão original nunca é devolvida ao frontend. O acesso à prévia continua protegido pela autenticação da plataforma, com o visitante convidado limitado à visualização.
+
 ## Verificação pendente
 
 Antes de ativar, validar os parsers com HTML real do perfil, lista de aulas, aula com PDF, Report Card e Evaluation. Validar o canal HTTPS e o fluxo de credenciais inválidas. Respostas de layouts desconhecidos devem permanecer como avisos, sem inventar dados.
