@@ -4,7 +4,7 @@ import { myIDAccess } from '../../../myid-access';
 export const dynamic='force-dynamic';
 export async function POST(request:Request){
  const access=myIDAccess(await getChatGPTUser());if(!access)return Response.json({error:'Entre na sua conta.'},{status:401});
- if(!access.canAdmin)return Response.json({error:'Acesso de visualiza??o.'},{status:403});
+ if(!access.canAdmin)return Response.json({error:'Acesso de visualização.'},{status:403});
  const origin=request.headers.get('origin');if(origin&&origin!==new URL(request.url).origin)return Response.json({error:'Origem inválida.'},{status:403});
  if(!env.BUCKET)return Response.json({error:'Armazenamento indisponível.'},{status:503});
  const form=await request.formData(),file=form.get('file');if(!(file instanceof File)||file.type!=='application/pdf'||file.size>20*1024*1024||file.size<5)return Response.json({error:'Envie um PDF de até 20 MB.'},{status:400});

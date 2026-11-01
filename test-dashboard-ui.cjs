@@ -1,4 +1,4 @@
-const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');const {parseHTML}=require('../id-validation/node_modules/linkedom');
+const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');const {parseHTML}=require('linkedom');
 const {document,Event}=parseHTML(fs.readFileSync('site/index.html','utf8'));const seed=JSON.parse(fs.readFileSync('site/seed.json','utf8'));let serverState=structuredClone(seed),revision=0,printed=0;
 const create=document.createElement.bind(document);document.createElement=(name)=>{const el=create(name);if(name==='dialog'){el.showModal=()=>el.setAttribute('open','');el.close=()=>el.removeAttribute('open')}return el};
 class FD{constructor(form){this.form=form}get(n){const x=this.form.querySelector('[name="'+n+'"]');if(!x)return null;if(x.tagName==='SELECT'){const op=x.querySelector('option[selected]')||x.querySelector('option');return op.getAttribute('value')??op.textContent}return x.value}getAll(n){return [...this.form.querySelectorAll('[name="'+n+'"]')].filter(x=>x.checked).map(x=>x.value)}has(n){return !!this.form.querySelector('[name="'+n+'"]')?.checked}}

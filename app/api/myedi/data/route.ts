@@ -19,7 +19,7 @@ export async function GET(){
 }
 export async function PUT(request:Request){
  const access=await identity();if(!access)return json({error:'Sessão expirada. Entre novamente.'},401);
- if(!access.canAdmin)return json({error:'Acesso de visualiza??o. Apenas o administrador pode alterar os dados.'},403);
+ if(!access.canAdmin)return json({error:'Acesso de visualização. Apenas o administrador pode alterar os dados.'},403);
  const owner=access.ownerId;
  const origin=request.headers.get('origin');if(origin&&origin!==new URL(request.url).origin)return json({error:'Origem inválida.'},403);
  if(!env.DB)return json({error:'Banco indisponível.'},503);

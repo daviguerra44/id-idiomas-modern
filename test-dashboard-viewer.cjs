@@ -1,4 +1,4 @@
-const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');const {parseHTML}=require('../id-validation/node_modules/linkedom');
+const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');const {parseHTML}=require('linkedom');
 const {document,Event}=parseHTML(fs.readFileSync('site/index.html','utf8'));const seed=JSON.parse(fs.readFileSync('site/seed.json','utf8'));let serverState=structuredClone(seed),revision=0,printed=0;
 const create=document.createElement.bind(document);document.createElement=(name)=>{const el=create(name);if(name==='dialog'){el.showModal=()=>el.setAttribute('open','');el.close=()=>el.removeAttribute('open')}return el};
 class FD{constructor(form){this.form=form}get(n){const x=this.form.querySelector('[name="'+n+'"]');if(!x)return null;if(x.tagName==='SELECT'){const op=x.querySelector('option[selected]')||x.querySelector('option');return op.getAttribute('value')??op.textContent}return x.value}getAll(n){return [...this.form.querySelectorAll('[name="'+n+'"]')].filter(x=>x.checked).map(x=>x.value)}has(n){return !!this.form.querySelector('[name="'+n+'"]')?.checked}}
@@ -6,7 +6,7 @@ const window={addEventListener(){},scrollTo(){},print(){printed++},open(){},toas
 vm.runInContext(fs.readFileSync('public/content.js','utf8'),ctx);vm.runInContext(fs.readFileSync('public/integrated.js','utf8'),ctx);vm.runInContext(fs.readFileSync('public/dashboard.js','utf8'),ctx);
 
 const tick=()=>new Promise(r=>setImmediate(r));
-(async()=>{await tick();const api=window.MyID;await api.render('inicio');assert.equal(document.querySelector('#edi-save-status').textContent,'Visualiza??o');assert(![...document.querySelectorAll('.edi-side-bottom a')].some(a=>a.getAttribute('href')==='#/my-id/admin'));
+(async()=>{await tick();const api=window.MyID;await api.render('inicio');assert.equal(document.querySelector('#edi-save-status').textContent,'Visualização');assert(![...document.querySelectorAll('.edi-side-bottom a')].some(a=>a.getAttribute('href')==='#/my-id/admin'));
 await api.render('perfil');const form=document.querySelector('#edi-profile-form');assert([...form.querySelectorAll('input,button')].every(el=>el.disabled));
 await api.render('material','ferias');const b=document.querySelector('[data-edi=complete]');assert(b.disabled);b.dispatchEvent(new Event('click',{bubbles:true}));await tick();assert(!serverState.completed.includes('ferias'));
 await api.render('admin');assert(!document.querySelector('[data-edi=teacher-edit]'));
