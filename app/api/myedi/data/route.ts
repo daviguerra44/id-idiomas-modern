@@ -1,22 +1,26 @@
 import { env } from 'cloudflare:workers';
 import { getChatGPTUser } from '../../../chatgpt-auth';
+import { myIDAccess } from '../../../myid-access';
 import seed from '../../../../site/seed.json';
 import { normalizeMyIDState } from '../../../myid-state';
 export const dynamic='force-dynamic';
 const json=(data:unknown,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store'}});
 const validDate=(value:string)=>{if(!/^\d{4}-\d{2}-\d{2}$/.test(value))return false;const d=new Date(value+'T12:00:00Z');return Number.isFinite(d.getTime())&&d.toISOString().slice(0,10)===value};
-async function identity(){ const user=await getChatGPTUser(); return user?.userId; }
+async function identity(){ return myIDAccess(await getChatGPTUser()); }
 export async function GET(){
- const owner=await identity();if(!owner)return json({error:'Entre na sua conta para acessar o MyID.'},401);
+ const access=await identity();if(!access)return json({error:'Entre na sua conta para acessar o MyID.'},401);
+ const owner=access.ownerId;
  if(!env.DB)return json({error:'Banco de dados indisponível.'},503);
  await env.DB.prepare('INSERT OR IGNORE INTO myedi_state (owner_id,document,revision,updated_at) VALUES (?,?,0,?)').bind(owner,JSON.stringify(seed),new Date().toISOString()).run();
  let row=await env.DB.prepare('SELECT document,revision,updated_at FROM myedi_state WHERE owner_id=?').bind(owner).first<{document:string,revision:number,updated_at:string}>();
  const normalized=normalizeMyIDState(JSON.parse(row!.document));
  if(normalized.changed){await env.DB.prepare('UPDATE myedi_state SET document=?,revision=revision+1,updated_at=? WHERE owner_id=? AND revision=?').bind(JSON.stringify(normalized.state),new Date().toISOString(),owner,row!.revision).run();row=await env.DB.prepare('SELECT document,revision,updated_at FROM myedi_state WHERE owner_id=?').bind(owner).first<{document:string,revision:number,updated_at:string}>();}
- return json({state:JSON.parse(row!.document),revision:row!.revision,updatedAt:row!.updated_at,canAdmin:true});
+ return json({state:JSON.parse(row!.document),revision:row!.revision,updatedAt:row!.updated_at,canAdmin:access.canAdmin,readOnly:access.readOnly});
 }
 export async function PUT(request:Request){
- const owner=await identity();if(!owner)return json({error:'Sessão expirada. Entre novamente.'},401);
+ const access=await identity();if(!access)return json({error:'Sessão expirada. Entre novamente.'},401);
+ if(!access.canAdmin)return json({error:'Acesso de visualiza??o. Apenas o administrador pode alterar os dados.'},403);
+ const owner=access.ownerId;
  const origin=request.headers.get('origin');if(origin&&origin!==new URL(request.url).origin)return json({error:'Origem inválida.'},403);
  if(!env.DB)return json({error:'Banco indisponível.'},503);
  const raw=await request.text();if(raw.length>2000000)return json({error:'Dados acima do limite.'},413);
