@@ -16,7 +16,7 @@ Configurar pela ferramenta de ambiente do Sites, nunca no código ou no navegado
 - `MYID_SESSION_KEY`: chave aleatória de 32 bytes em base64. Tratar como segredo. A rotação invalida as conexões armazenadas.
 - `MYID_CONNECTION_VERIFIED`: somente definir como `true` após confirmar acesso permitido, transporte HTTPS, resposta de autenticação e compatibilidade dos parsers com HTML real.
 
-Nenhum desses valores foi criado ou ativado na publicação desta implementação. A configuração não utiliza o cookie exposto anteriormente no chat.
+A chave `MYID_SESSION_KEY` foi configurada no ambiente de produção como segredo. `MYID_ORIGIN` e `MYID_CONNECTION_VERIFIED` permanecem sem ativação: a chave prepara a criptografia e não habilita o envio de credenciais. A configuração não utiliza o cookie exposto anteriormente no chat.
 
 ## Rotas novas
 
@@ -60,6 +60,20 @@ As consultas de todas as rotas foram exercitadas com transporte simulado. Soment
 O diálogo de entrada do site agora usa os campos `username` e `password` para a ação `connect` do adaptador existente. O endpoint intermediário é consultado antes de habilitar os campos. Enquanto a configuração HTTPS não estiver validada, ambos os campos e o envio permanecem desativados, inclusive antes do carregamento do JavaScript.
 
 O frontend não persiste a senha e a limpa após sucesso, erro e fechamento do diálogo. Um login bem-sucedido abre a conexão de importação, evitando apresentar os dados antigos como se já fossem dados recém-importados. A sessão original nunca é devolvida ao frontend. O acesso à prévia continua protegido pela autenticação da plataforma, com o visitante convidado limitado à visualização.
+
+## Verificação observacional de 01/11/2026 — revisão 16
+
+O frontend não foi alterado nesta revisão.
+
+A leitura HTTPS da página institucional `https://id-idiomas.com.br/` retornou HTTP 200, título `ID Idiomas | Foco em conversação!`. O link do MyID não é um elemento `a`: é uma entrada JSON da configuração Divi `et_link_options_data`, com classe `et_pb_blurb_0_tb_header` e URL `http://my.id-idiomas.com.br/login/auth`. O cliente agora lê o formulário em `/login/auth` e usa esse endereço no Referer do POST. Não deriva uma rota alternativa por tentativa.
+
+O comando `node scripts/inspect-myid-public-contract.mjs` reproduz essa inspeção pública, sem executar scripts da página e sem ler o portal MyID. Ele informa separadamente links seguros publicados. Não encontrar um link HTTPS nesse conjunto não prova que não exista outro canal da instituição.
+
+No teste TLS de `2026-11-01T23:42:11.226Z`, a conexão ao endereço resolvido `66.228.32.18:443` retornou `ECONNREFUSED`, sem enviar HTTP, credenciais ou cookies. Esse é um resultado daquele ambiente e momento, não uma afirmação de indisponibilidade permanente.
+
+A amostra pública de formulário confirma `username`, `password` e checkbox opcional `remember-me`. Não declara `enctype`, portanto o adaptador utiliza a codificação padrão de formulário `application/x-www-form-urlencoded`. A amostra tem zero campos ocultos e zero metadados CSRF; isso não confirma ausência de CSRF no tráfego real. Não há captura dos cabeçalhos do GET inicial nessa amostra, de modo que cookies iniciais permanecem **não verificados**.
+
+`inspectLoginForm()` retorna apenas nomes e propriedades do contrato; nunca retorna valores de campos ocultos ou tokens. O envio real do POST, os cookies iniciais e as respostas autenticadas continuam sem validação externa. Todos os testes autenticados usam fixtures identificadas como sintéticas.
 
 ## Verificação pendente
 

@@ -3,6 +3,8 @@ import { parseHTML } from 'linkedom';
 export class LegacyError extends Error {
   constructor(public code: string, message: string, public status = 502) { super(message); }
 }
+// Published by the institution's own homepage (Divi et_link_options_data).
+export const LOGIN_ENTRY_PATH='/login/auth';
 export type Enrollment = { id: string; registration: string; title: string; level: string; teacher: string; status: string; links: Record<string, string> };
 export type Lesson = { id: string; title: string; unit: string; sequence: number; path: string };
 export type Report = { number: number; available: boolean; scores: { label: string; value: number }[]; officialGrade: number | null; comment: string; printPath?: string };
@@ -33,13 +35,22 @@ function localLinks(root: Pick<ParentNode,'querySelectorAll'>, origin: string) {
 }
 export function isLogin(html: string) { return !!doc(html).querySelector('form[action*="login/authenticate"], input[type="password"]'); }
 
-export function loginForm(html: string, origin: string) {
+function authenticationForm(html: string, origin: string) {
   const root = doc(html), form = Array.from(root.querySelectorAll('form')).find(f => {
     try { const u = new URL(f.getAttribute('action') || '', origin); return u.origin === origin && u.pathname === '/login/authenticate'; } catch { return false; }
   });
   if (!form || (form.getAttribute('method') || 'get').toLowerCase() !== 'post' || !form.querySelector('input[name="username"]') || !form.querySelector('input[name="password"][type="password"]')) throw new LegacyError('LOGIN_FORMAT', 'O formulário de login mudou. Precisamos conferir o formato recebido.');
   const encoding=(form.getAttribute('enctype')||'application/x-www-form-urlencoded').toLowerCase();
   if(encoding!=='application/x-www-form-urlencoded')throw new LegacyError('LOGIN_ENCODING','O formato de envio do login mudou e precisa ser confirmado.');
+  return form;
+}
+// Inspection metadata deliberately excludes all values, including hidden tokens.
+export function inspectLoginForm(html:string,origin:string){
+  const form=authenticationForm(html,origin),root=doc(html);
+  return {action:'/login/authenticate',method:'POST',encoding:form.getAttribute('enctype')||'application/x-www-form-urlencoded',encodingExplicit:form.hasAttribute('enctype'),credentialFields:['username','password'],hiddenFieldNames:Array.from(form.querySelectorAll('input[type="hidden"][name]')).map(el=>el.getAttribute('name')!),checkboxNames:Array.from(form.querySelectorAll('input[type="checkbox"][name]')).map(el=>el.getAttribute('name')!),csrfMetadataNames:Array.from(root.querySelectorAll('meta[name]')).map(el=>el.getAttribute('name')!).filter(name=>/csrf/i.test(name))};
+}
+export function loginForm(html: string, origin: string) {
+  const form=authenticationForm(html,origin);
   const body = new URLSearchParams();
   for (const input of form.querySelectorAll('input[type="hidden"][name]')) body.append(input.getAttribute('name')!, input.getAttribute('value') || '');
   return body;
@@ -156,7 +167,7 @@ export class LegacyClient {
       if (!safe && !loginPath && !(options.logout&&target==='/logout/index'&&method==='GET')) throw new LegacyError('PATH_BLOCKED', 'O portal indicou um endereço fora do escopo da integração.');
       const headers: Record<string, string> = { Accept: 'text/html,application/pdf;q=0.9' };
       const cookie = Object.entries(this.jar).map(([k,v]) => k + '=' + v).join('; '); if (cookie) headers.Cookie = cookie;
-      if (body) { headers['Content-Type'] = 'application/x-www-form-urlencoded'; headers.Origin = this.origin; headers.Referer = this.origin + '/'; }
+      if (body) { headers['Content-Type'] = 'application/x-www-form-urlencoded'; headers.Origin = this.origin; headers.Referer = this.origin + LOGIN_ENTRY_PATH; }
       let response: Response;
       try { response = await this.transport(this.origin + target, { method, body: body?.toString(), headers, redirect: 'manual', signal: AbortSignal.timeout(15000) }); }
       catch { throw new LegacyError('UPSTREAM_UNAVAILABLE', 'Não foi possível conectar ao MyID original. Tente novamente mais tarde.'); }
@@ -185,7 +196,7 @@ export class LegacyClient {
     return decodeHtml(await this.request(path, options));
   }
   async login(username: string, password: string) {
-    const form = loginForm(await this.html('/', { login: true }), this.origin);
+    const form = loginForm(await this.html(LOGIN_ENTRY_PATH, { login: true }), this.origin);
     form.set('username', username); form.set('password', password);
     const landing = await this.html('/login/authenticate', { method: 'POST', body: form, login: true });
     if (isLogin(landing) || !this.jar.JSESSIONID) throw new LegacyError('LOGIN_FAILED', 'Usuário ou senha não reconhecidos pelo MyID.', 401);
