@@ -19,3 +19,7 @@ A biblioteca inicial inclui quatro PDFs originais disponíveis publicamente e 11
 ## Código e verificação
 
 HTML público em site/index.html; assets em public; API em app/api/myedi; esquema em db/schema.ts; migração em drizzle. Compilar pelo helper build-site.mjs do plugin Sites. Testes: test-dashboard-api.cjs (servidor local em 5173), test-dashboard-ui.cjs, npx tsc --noEmit.
+
+## Atualização de desempenho e aulas
+
+Visão geral começa pelo desempenho animado e não exibe os antigos quatro contadores. Calendário recorrente e por aula, com presença pessoal explicitamente registrada; nenhuma presença ou falta é inferida de uma aula prevista ou da nota de Presença. Modo claro/escuro/sistema. Os materiais do curso são PDFs vinculados às aulas, não vídeos públicos. Administração inclui aulas e importação múltipla de PDFs. A normalização v2 atualiza registros existentes com revisão otimista sem apagar dados do aluno. Ver INTEGRATION.md para os limites da sincronização com o portal original.
