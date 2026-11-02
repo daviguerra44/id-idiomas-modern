@@ -3,6 +3,7 @@ import {emptyMyIDState} from '../myid-empty';
 import { normalizeMyIDState } from '../myid-state';
 import { boundedBody, decodeHtml, inspectLoginForm, LOGIN_ENTRY_PATH, LegacyClient, LegacyError, parseProfile, findProfileEditPath,parseProfileFields,parseLessons, parseFiles, parseReports, parseReadOnlyDocument, type CookieJar, type Enrollment, type Lesson } from './protocol';
 import { seal, unseal, stableId, validKey } from './vault';
+import {inspectAcademicHTML} from './inspection';
 
 type Job = { kind: 'course' | 'lesson' | 'file' | 'report' | 'evaluation' | 'boleto' | 'contract' | 'print' | 'review' | 'profile-edit'; path: string; enrollment: string; lesson?: Lesson; name?: string; lessonKey?: string; documentKind?:string };
 type Resource = {id:string;enrollment:string;type:'lesson'|'document'|'pdf';path:string;name:string;lesson?:Lesson};
@@ -26,6 +27,27 @@ export async function inspectConnection(){
   const config=configuration(),client=new LegacyClient(config.origin,{},fetch,config.transportOrigin,config.allowHttp);
   const contract=inspectLoginForm(await client.html(LOGIN_ENTRY_PATH,{login:true}),config.origin);
   return {...connectionStatus(),reachable:true,contract,checkedAt:now()};
+}
+export async function inspectAcademic(owner:string,kind:string,enrollmentId?:string,lessonId?:string){
+ if(!['profile','course','lesson'].includes(kind))throw new LegacyError('INSPECTION_INVALID','Inspeção inválida.',400);
+ await load(owner);await lease(owner);
+ try{
+  const {config,session}=await load(owner),client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin,config.allowHttp);
+  let path=session.profilePath;
+  if(kind!=='profile'){
+   const enrollment=session.enrollments.find(e=>e.id===enrollmentId);
+   if(!enrollment?.links.curso)throw new LegacyError('ENROLLMENT_FORBIDDEN','O curso não está vinculado à sua sessão.',403);
+   path=enrollment.links.curso;
+   if(kind==='lesson'){
+    const lessons=parseLessons(await client.html(path),config.origin,enrollment.id),lesson=lessons.find(l=>l.id===lessonId);
+    if(!lesson)throw new LegacyError('LESSON_NOT_FOUND','A aula não foi encontrada no curso.',404);path=lesson.path;
+   }
+  }
+  const html=await client.html(path),evidence=inspectAcademicHTML(html,config.origin);
+  session.jar=client.jar;await store(owner,session);
+  return {kind,path,...evidence,checkedAt:now()};
+ }catch(error){if(error instanceof LegacyError&&error.code==='SESSION_EXPIRED')await env.DB!.prepare('UPDATE myid_legacy_session SET expires_at=0 WHERE owner_id=?').bind(owner).run();throw error;}
+ finally{await release(owner);}
 }
 async function row(owner: string) { return env.DB?.prepare('SELECT sealed,expires_at,failures,retry_at FROM myid_legacy_session WHERE owner_id=?').bind(owner).first<Row>(); }
 async function load(owner: string) {
