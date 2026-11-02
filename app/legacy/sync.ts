@@ -126,7 +126,7 @@ function mergeProfile(s: any, profile: ReturnType<typeof parseProfile>) {
   s.notebooks=Object.fromEntries(Object.entries(s.notebooks).filter(([id])=>materialIds.has(id)));
   s.tasks=s.tasks.filter((t:any)=>!t.courseId||courseIds.has(t.courseId));s.attendance=s.attendance.filter((a:any)=>courseIds.has(a.courseId));
   if (profile.name) s.profile.name=profile.name;
-  s.connection={status:'connected',syncedAt:now()};
+  s.connection={status:'connected',syncedAt:now(),profileParserVersion:2};
   for (const enrollment of profile.enrollments) {
     const id=courseId(s,enrollment), teacherId='legacy-teacher-'+enrollment.id;
     if (enrollment.teacher) { const t=s.teachers.find((t:any)=>t.id===teacherId); if(t)t.name=enrollment.teacher;else s.teachers.push({id:teacherId,name:enrollment.teacher,email:'',specialty:'Idiomas'}); }
@@ -231,10 +231,11 @@ async function importFile(config:ReturnType<typeof configuration>,session:Sessio
           if(job.documentKind){const c=s.courses.find((c:any)=>c.id===cId);if(c){c.documents??={};const document=c.documents[job.documentKind]??={blocks:[],materialIds:[]};document.materialIds??=[];if(!document.materialIds.includes(materialId))document.materialIds.push(materialId);document.syncedAt=now();}}
         });session.imported++;
 }
-async function upsertLesson(owner:string,enrollment:Enrollment,job:Job){
-  const lesson=job.lesson!;
-  await updateAcademic(owner,s=>{const item={id:job.lessonKey,courseId:courseId(s,enrollment),title:lesson.title,unit:lesson.unit,sequence:lesson.sequence,lessonNumber:lesson.lessonNumber,sourceLabel:lesson.sourceLabel,sourceUnit:lesson.sourceUnit,date:'',description:'',materialIds:[],source:'myid',syncedAt:now(),archived:false};const old=s.lessons.find((l:any)=>l.id===item.id);if(old)Object.assign(old,{...item,materialIds:old.materialIds});else s.lessons.push(item);});
+function mergeLesson(s:any,enrollment:Enrollment,job:Job){
+ const lesson=job.lesson!;const item={id:job.lessonKey,courseId:courseId(s,enrollment),title:lesson.title,unit:lesson.unit,sequence:lesson.sequence,lessonNumber:lesson.lessonNumber,sourceLabel:lesson.sourceLabel,sourceUnit:lesson.sourceUnit,date:'',description:'',materialIds:[],source:'myid',syncedAt:now(),archived:false};
+ const old=s.lessons.find((l:any)=>l.id===item.id);if(old)Object.assign(old,{...item,materialIds:old.materialIds});else s.lessons.push(item);
 }
+async function upsertLesson(owner:string,enrollment:Enrollment,job:Job){await updateAcademic(owner,s=>mergeLesson(s,enrollment,job));}
 
 const resourceJSON=(value:unknown)=>Response.json(value,{headers:{'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
 function enrollmentView(e:Enrollment){const {links,...data}=e;return {...data,available:Object.keys(links)};}
@@ -324,7 +325,8 @@ export async function readResource(owner:string,segments:string[]):Promise<Respo
     const html=await decodeHtml(response);
     if(kind==='course'){
       const lessons=parseLessons(html,config.origin,enrollment.id),result=[];
-      for(const lesson of lessons){await upsertLesson(session.accountKey,enrollment,{kind:'lesson',path:lesson.path,enrollment:enrollment.id,lesson,lessonKey:'legacy-lesson-'+enrollment.id+'-'+lesson.id});await registerResource(session,{type:'lesson',enrollment:enrollment.id,path:lesson.path,name:lesson.title,lesson});const {path,...data}=lesson;result.push({...data,url:'/api/myid/enrollments/'+enrollment.id+'/lessons/'+lesson.id});}
+      await updateAcademic(session.accountKey,s=>{for(const lesson of lessons)mergeLesson(s,enrollment,{kind:'lesson',path:lesson.path,enrollment:enrollment.id,lesson,lessonKey:'legacy-lesson-'+enrollment.id+'-'+lesson.id});const c=s.courses.find((c:any)=>c.id===courseId(s,enrollment));if(c)c.courseSyncedAt=now();});
+      for(const lesson of lessons){await registerResource(session,{type:'lesson',enrollment:enrollment.id,path:lesson.path,name:lesson.title,lesson});const {path,...data}=lesson;result.push({...data,url:'/api/myid/enrollments/'+enrollment.id+'/lessons/'+lesson.id});}
       return await finish(resourceJSON({enrollment:enrollmentView(enrollment),lessons:result}));
     }
     if(kind==='report-cards'){
