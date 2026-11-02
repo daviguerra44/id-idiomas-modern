@@ -16,7 +16,7 @@ async function refresh(){
   if(!status.configured){message(status.reason+' Ao confirmar, verificaremos a conexão novamente.');return;}
   if(status.connected){get('#myid-entry-form').hidden=true;get('#myid-entry-connected').hidden=false;message('Sua conta original está conectada. Acesse a importação de cursos e materiais.');return;}
   controls();message('Use o mesmo usuário e senha do portal MyID. Sua senha não será salva.');
- }catch(error){if(ticket!==generation)return;message(error.status===403?'Este acesso permite visualizar o painel compartilhado. A conexão original é gerenciada pelo administrador.':error.status===401?'Entre na conta autorizada para acessar esta prévia.':error.message);}
+ }catch(error){if(ticket!==generation)return;message(error.status===403?'Sua conta não tem permissão para acessar esta página.':error.status===401?'Entre na conta autorizada para acessar esta prévia.':error.message);}
 }
 function openConnected(){const dialog=get('#login-dialog');dialog.close();window.MyID?.invalidate();location.hash='#/my-id/conexao';}
 function init(){

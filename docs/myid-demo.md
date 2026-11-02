@@ -1,3 +1,7 @@
+# Registro histórico — demonstração retirada
+
+A versão 20 substitui o modo capturado pela ponte individual. Este documento descreve somente a versão 19; não representa o funcionamento atual. A rota de demonstração retorna 410 e não fornece registros pessoais.
+
 # Demonstração restrita com dados confirmados
 
 Entrada: `/#/my-id/demo/inicio`. O botão principal do diálogo de MyID abre essa demonstração, sem solicitar senha do portal original. A opção de conectar a conta permanece separada e identificada como integração em validação.

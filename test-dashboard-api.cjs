@@ -1,24 +1,2 @@
-const assert=require('node:assert/strict');
-(async()=>{const base='http://127.0.0.1:5173';
-const home=await fetch(base);assert.equal(home.status,200);assert((await home.text()).includes('/dashboard.js?v='));
-assert.equal((await fetch(base+'/api/myedi/data')).status,401);
-const login=await fetch(base+'/signin-with-chatgpt?return_to=/',{redirect:'manual'});const cookie=login.headers.get('set-cookie').split(';')[0];
-const request=(path,init={})=>fetch(base+path,{...init,headers:{Cookie:cookie,...init.headers}});
-const first=await request('/api/myedi/data');assert.equal(first.status,200);const initial=await first.json();assert.equal(initial.state.materials.length,120);assert(initial.canAdmin);
-const save=(state,revision)=>request('/api/myedi/data',{method:'PUT',headers:{'Content-Type':'application/json',Origin:base},body:JSON.stringify({state,revision})});
-const changed=structuredClone(initial.state);changed.teachers.push({id:'test-teacher',name:'Professor de Teste',email:'',specialty:'Inglês'});changed.courses.push({id:'test-course',title:'Curso de Teste',teacherId:'test-teacher',scores:[{label:'Teste',value:10}]});
-let result=await save(changed,initial.revision);assert.equal(result.status,200);let revision=(await result.json()).revision;
-const again=await(await request('/api/myedi/data')).json();assert(again.state.courses.some(c=>c.id==='test-course'));assert(again.state.teachers.some(c=>c.id==='test-teacher'));
-assert.equal((await save(changed,initial.revision)).status,409);
-const bad=structuredClone(changed);bad.courses[0].scores[0].value=11;assert.equal((await save(bad,revision)).status,400);
-assert.equal((await request('/api/myedi/data',{method:'PUT',headers:{'Content-Type':'application/json',Origin:'https://untrusted.example'},body:JSON.stringify({state:changed,revision})})).status,403);
-const fd=new FormData();fd.append('file',new File(['%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF'], 'material-teste.pdf',{type:'application/pdf'}));
-const upload=await request('/api/myedi/files',{method:'POST',body:fd});assert.equal(upload.status,200);const file=await upload.json();const download=await request(file.url);assert.equal(download.status,200);assert((await download.text()).startsWith('%PDF-'));assert.equal((await fetch(base+file.url)).status,401);
-const linked=structuredClone(changed);linked.materials.push({id:'test-lesson-pdf',title:'Unit 1 · PDF',type:'pdf',url:file.url,courseId:'test-course',lessonId:'test-lesson',category:'course'});linked.lessons.push({id:'test-lesson',title:'Unit 1 · Lesson 1',courseId:'test-course',sequence:1,date:'2026-10-29',materialIds:['test-lesson-pdf']});linked.attendance.push({id:'test-presence',courseId:'test-course',date:'2026-10-29',status:'present',note:'Registro pessoal',source:'student'});linked.settings.theme='dark';
-const linkedSave=await save(linked,revision);assert.equal(linkedSave.status,200);revision=(await linkedSave.json()).revision;
-const linkedGet=await(await request('/api/myedi/data')).json();assert.equal(linkedGet.state.lessons.find(l=>l.id==='test-lesson').materialIds[0],'test-lesson-pdf');assert(linkedGet.state.attendance.some(a=>a.id==='test-presence'&&a.status==='present'));assert.equal(linkedGet.state.settings.theme,'dark');assert(linkedGet.state.materials.filter(m=>m.id.startsWith('practice-')).every(m=>!m.courseId&&m.category==='community'));
-const invalidAttendance=structuredClone(linked);invalidAttendance.attendance[0].status='invented';assert.equal((await save(invalidAttendance,revision)).status,400);
-const wrong=new FormData();wrong.append('file',new File(['not a pdf'],'wrong.pdf',{type:'application/pdf'}));assert.equal((await request('/api/myedi/files',{method:'POST',body:wrong})).status,400);
-const clean=await save(initial.state,revision);assert.equal(clean.status,200);
-console.log('API checks passed: authenticated access, persistent lesson-to-PDF mapping, protected uploads, attendance, dark theme, automatic cleanup of community videos, conflicts and grade validation.');
-})().catch(err=>{console.error(err);process.exitCode=1});
+// Replaced the old local seeded-server test with the account-scoped API/import suite.
+require('./test-myid-integration.cjs');

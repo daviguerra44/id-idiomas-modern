@@ -18,13 +18,13 @@ export function safePath(raw: string, origin: string): string | null {
     const url = new URL(raw, origin);
     if (url.origin !== origin || url.username || url.password || /%2f|%5c|%2e|\\/i.test(url.pathname)) return null;
     const p = url.pathname;
-    const allowed = /^(?:\/perfil(?:\/(?:home|show\/[a-f\d]+|curso\/\d+|aula\/\d+|reportCardMatricula\/\d+|evaluationMatricula\/\d+))?\/?|\/reportCard\/print\/\d+|\/matricula\/(?:boletoPrint|contratoPrint)\/\d+|\/storage\/uploads\/Anexo\/[\w-]+\/[^/]+)$/i.test(p);
+    const allowed = /^(?:\/perfil(?:\/(?:home|(?:show|edit)\/[a-f\d]+|curso\/\d+|aula\/\d+|reportCardMatricula\/\d+|evaluationMatricula\/\d+))?\/?|\/reportCard\/print\/\d+|\/matricula\/(?:boletoPrint|contratoPrint|revisarContrato)\/\d+|\/storage\/uploads\/Anexo\/[\w-]+\/[^/]+)$/i.test(p);
     if (!allowed) return null;
     const keys = [...url.searchParams.keys()];
     if (p.includes('/aula/')) {
       if (keys.some(k => k !== 'aula') || !/^[a-f\d-]{8,100}$/i.test(url.searchParams.get('aula') || '') || url.searchParams.getAll('aula').length !== 1) return null;
     } else if (p.startsWith('/reportCard/print/')) {
-      if (keys.some(k => k !== 'u') || url.searchParams.has('u') && url.searchParams.get('u') !== '0') return null;
+      if (keys.some(k => k !== 'u') || url.searchParams.getAll('u').length>1 || (url.searchParams.has('u') && (!url.searchParams.get('u') || url.searchParams.get('u')!.length>100 || /[\r\n]/.test(url.searchParams.get('u')!)))) return null;
     } else if (keys.length) return null;
     return p + url.search;
   } catch { return null; }
@@ -73,7 +73,7 @@ export function parseProfile(html: string, origin: string) {
   if (isLogin(html)) throw new LegacyError('SESSION_EXPIRED', 'Sua sessão no MyID expirou. Conecte novamente.', 401);
   const root = doc(html), links = localLinks(root, origin), enrollments = new Map<string, Enrollment>();
   for (const link of links) {
-    const match = link.path.match(/^\/(?:perfil\/(curso|reportCardMatricula|evaluationMatricula)|matricula\/(boletoPrint|contratoPrint))\/(\d+)$/);
+    const match = link.path.match(/^\/(?:perfil\/(curso|reportCardMatricula|evaluationMatricula)|matricula\/(boletoPrint|contratoPrint|revisarContrato))\/(\d+)$/);
     if (!match) continue;
     const kind = match[1] || match[2], id = match[3], container = containerFor(link.node, id);
     const item = enrollments.get(id) || { id, registration: clean(container.textContent).match(/\d{4}\.\d\.\d{4,}/)?.[0] || '', title: clean(container.querySelector('.card-title,h2,h3,h4')?.textContent), level: field(container, 'Nível'), teacher: field(container, 'Professor'), status: field(container, 'Situação da Matrícula'), links: {} };
@@ -86,6 +86,20 @@ export function parseProfile(html: string, origin: string) {
 }
 
 export function findProfilePath(html: string, origin: string) { return localLinks(doc(html), origin).find(l => /^\/perfil\/show\//.test(l.path))?.path; }
+export function findProfileEditPath(html:string,origin:string,profilePath:string){return localLinks(doc(html),origin).find(l=>l.path===profilePath.replace('/show/','/edit/'))?.path;}
+export function parseProfileFields(html:string){
+ const root=doc(html);if(root.querySelector('form[action*="login/authenticate"]'))throw new LegacyError('SESSION_EXPIRED','Sua sessão no MyID expirou. Conecte novamente.',401);
+ const fields=[];
+ for(const node of root.querySelectorAll('input[name],textarea[name],select[name]')){
+  const name=node.getAttribute('name')||'',type=(node.getAttribute('type')||'text').toLowerCase();
+  if(['hidden','password','submit','button','file'].includes(type)||/password|senha|token|csrf|session|secret|api.?key/i.test(name))continue;
+  const id=node.getAttribute('id');const label=id?Array.from(root.querySelectorAll('label[for]')).find(l=>l.getAttribute('for')===id):undefined;
+  const value=node.tagName.toLowerCase()==='textarea'?clean(node.textContent):node.tagName.toLowerCase()==='select'?clean(node.querySelector('option[selected]')?.textContent):node.getAttribute('value')||'';
+  fields.push({name,label:clean(label?.textContent)||name,value:value.slice(0,2000)});
+ }
+ if(!fields.length)throw new LegacyError('PROFILE_FIELDS_NOT_FOUND','Nenhum campo cadastral de leitura foi identificado.');
+ return fields.slice(0,100);
+}
 export function parseLessons(html: string, origin: string, enrollmentId: string): Lesson[] {
   if (isLogin(html)) throw new LegacyError('SESSION_EXPIRED', 'Sua sessão no MyID expirou. Conecte novamente.', 401);
   const links = localLinks(doc(html), origin).filter(l => l.path.startsWith('/perfil/aula/' + enrollmentId + '?'));
@@ -146,6 +160,7 @@ export function parseReadOnlyDocument(html: string, origin: string) {
 
 export type CookieJar = Record<string, string>;
 export class LegacyClient {
+  lastPath='';
   constructor(public origin: string, public jar: CookieJar = {}, private transport: typeof fetch = fetch) {
     const url = new URL(origin);
     if (url.protocol !== 'https:' || url.origin !== origin || url.hostname !== 'my.id-idiomas.com.br') throw new LegacyError('SECURE_ORIGIN_REQUIRED', 'A integração aguarda um endereço HTTPS verificado do MyID.', 503);
@@ -188,7 +203,7 @@ export class LegacyClient {
       if (response.status === 429) throw new LegacyError('RATE_LIMIT', 'O MyID pediu uma pausa nas consultas. Tente novamente em alguns minutos.', 429);
       if (response.status >= 500) throw new LegacyError('UPSTREAM_UNAVAILABLE', 'O MyID está temporariamente indisponível. A importação pode ser retomada mais tarde.');
       if (!response.ok) throw new LegacyError('UPSTREAM_RESPONSE', 'O MyID não disponibilizou esse recurso (' + response.status + ').');
-      return response;
+      this.lastPath=target;return response;
     }
     throw new LegacyError('REDIRECT_LIMIT', 'O portal não concluiu o redirecionamento.');
   }
@@ -200,7 +215,7 @@ export class LegacyClient {
     form.set('username', username); form.set('password', password);
     const landing = await this.html('/login/authenticate', { method: 'POST', body: form, login: true });
     if (isLogin(landing) || !this.jar.JSESSIONID) throw new LegacyError('LOGIN_FAILED', 'Usuário ou senha não reconhecidos pelo MyID.', 401);
-    let page=landing,path=findProfilePath(page,this.origin);
+    let page=landing,path=/^\/perfil\/show\/[a-f\d]+$/i.test(this.lastPath)?this.lastPath:findProfilePath(page,this.origin);
     if(path)page=await this.html(path);
     let profile;
     try{profile=parseProfile(page,this.origin);}catch(error){
@@ -208,7 +223,9 @@ export class LegacyClient {
       page=await this.html('/perfil/home');path=findProfilePath(page,this.origin);
       profile=parseProfile(path?await this.html(path):page,this.origin);
     }
-    return { ...profile, profilePath: path || profile.profilePath || '/perfil/home' };
+    const profilePath=path||profile.profilePath;
+    if(!profilePath)throw new LegacyError('PROFILE_LINK_REQUIRED','O portal não forneceu um identificador de perfil verificável. Nenhum perfil fixo será utilizado.');
+    return { ...profile, profilePath };
   }
   async logout(){const response=await this.request('/logout/index',{logout:true});await response.body?.cancel();this.jar={};return {requested:true};}
 }

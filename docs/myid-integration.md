@@ -1,12 +1,12 @@
 # Adaptador MyID
 
-O frontend mantém a autenticação da plataforma Sites. A conexão com o MyID original é uma operação separada, disponível somente ao administrador da prévia. O visitante convidado visualiza o mesmo conjunto acadêmico e não recebe a sessão original.
+O frontend mantém a autenticação da plataforma Sites. A conexão com o MyID original é individual: cada usuário autorizado pela política de acesso do Site vincula sua própria conta. O identificador estável da plataforma separa as sessões. O perfil descoberto após o login separa os dados acadêmicos e arquivos, inclusive quando a mesma pessoa troca de conta MyID. Não existe perfil de aluno predefinido ou fallback compartilhado.
 
 ## Estado da implementação
 
 O adaptador foi implementado a partir dos dois documentos de mapeamento recebidos em 01/11/2026 e do formulário público anteriormente capturado. Os parsers e o fluxo de importação foram testados com **fixtures construídas para teste**, não com respostas autenticadas reais. Nenhuma consulta ou autenticação contra o host bloqueado pelo Opera foi executada para esta implementação. Nenhum PDF real foi importado neste trabalho.
 
-A conexão externa permanece desativada. O endereço observado usa HTTP e ainda não há endereço HTTPS verificado nem confirmação do HTML autenticado. A aplicação não solicita credenciais enquanto a configuração estiver pendente. Não usar este adaptador como relay para contornar restrições de acesso das ferramentas.
+A conexão externa permanece desativada. O endereço observado usa HTTP e ainda não há endereço HTTPS verificado nem confirmação do HTML autenticado. A aplicação não envia credenciais enquanto a configuração estiver pendente. Não usar este adaptador como relay para contornar restrições de acesso das ferramentas.
 
 ## Configuração do servidor
 
@@ -30,6 +30,14 @@ A chave `MYID_SESSION_KEY` foi configurada no ambiente de produção como segred
 - `disconnect`: solicita `GET /logout/index` quando há sessão ativa e canal configurado; sempre remove a sessão local. Retorna `remoteLogout: requested`, `unconfirmed` ou `not_attempted`. Uma solicitação aceita não é apresentada como prova de invalidação da sessão no servidor original.
 
 O importador não aceita URL, matrícula ou ID de arquivo fornecido pelo navegador. Os recursos são derivados exclusivamente dos links obtidos no perfil e nas aulas autenticadas. Cada etapa é idempotente. A interface faz consultas sequenciais com pausa de 650 ms e permite retomar a fila.
+
+## Isolamento multiusuário
+
+Sessão selada por `live:<Sites userId>`, com AES-GCM e esse identificador como dado autenticado. Dados e arquivos usam uma chave derivada desse escopo e do hash do caminho do perfil descoberto. O frontend nunca recebe essa chave, cookies ou credenciais. Matrículas, aulas, PDFs e impressões vêm apenas de links do perfil autenticado. O cliente não escolhe IDs de matrícula ou URLs no importador.
+
+`GET /api/myedi/data` retorna estado vazio sem conexão ativa. Preferências, tarefas, anotações e presenças pessoais podem ser salvas somente no escopo conectado; alterações em notas, cursos e cadastros são recusadas. PDFs exigem sessão própria ativa e vínculo no catálogo dessa conta. Logout remove a sessão e limpa o estado da interface. A antiga rota `/api/myid/demo` retorna 410. Os dados capturados antigos não alimentam mais a aplicação.
+
+O importador lê a edição de perfil e a revisão contratual somente quando seus links são encontrados no perfil. Não grava cadastro e não aceita contratos. O endpoint de gravação do perfil não foi confirmado.
 
 ## Armazenamento
 
@@ -59,7 +67,7 @@ As consultas de todas as rotas foram exercitadas com transporte simulado. Soment
 
 O diálogo de entrada do site usa os campos `username` e `password` para a ação `connect` do adaptador existente. Os campos e o botão de confirmar ficam disponíveis. Confirmar primeiro consulta a disponibilidade do canal sem enviar credenciais; se a configuração segura estiver pendente, exibe erro visível e não executa o POST com a senha. Quando o canal está configurado, segue com a autenticação. Controles são bloqueados temporariamente durante a operação para impedir duplicidade. O formulário usa `method="dialog"` para impedir uma submissão HTTP nativa caso o JavaScript não carregue.
 
-O frontend não persiste a senha e a limpa após sucesso, erro e fechamento do diálogo. Um login bem-sucedido abre a conexão de importação, evitando apresentar os dados antigos como se já fossem dados recém-importados. A sessão original nunca é devolvida ao frontend. O acesso à prévia continua protegido pela autenticação da plataforma, com o visitante convidado limitado à visualização.
+O frontend não persiste a senha e a limpa após sucesso, erro e fechamento do diálogo. Um login bem-sucedido abre a conexão de importação, evitando apresentar os dados antigos como se já fossem dados recém-importados. A sessão original nunca é devolvida ao frontend. O acesso à prévia continua protegido pela autenticação da plataforma, e cada visitante autorizado pode vincular sua própria conta MyID.
 
 ## Verificação observacional de 01/11/2026 — revisão 16
 
