@@ -16,6 +16,9 @@ const selectors = '[class~="card"], [class~="card-panel"], [class~="panel"], art
 export function safePath(raw: string, origin: string): string | null {
   try {
     const url = new URL(raw, origin);
+    // Legacy absolute HTTP links are resolved as paths, never fetched over HTTP.
+    const canonical=new URL(origin);
+    if(url.host===canonical.host&&['http:','https:'].includes(url.protocol)&&!url.username&&!url.password){url.protocol=canonical.protocol;}
     if (url.origin !== origin || url.username || url.password || /%2f|%5c|%2e|\\/i.test(url.pathname)) return null;
     const p = url.pathname;
     const allowed = /^(?:\/perfil(?:\/(?:home|(?:show|edit)\/[a-f\d]+|curso\/\d+|aula\/\d+|reportCardMatricula\/\d+|evaluationMatricula\/\d+))?\/?|\/reportCard\/print\/\d+|\/matricula\/(?:boletoPrint|contratoPrint|revisarContrato)\/\d+|\/storage\/uploads\/Anexo\/[\w-]+\/[^/]+)$/i.test(p);
@@ -37,7 +40,7 @@ export function isLogin(html: string) { return !!doc(html).querySelector('form[a
 
 function authenticationForm(html: string, origin: string) {
   const root = doc(html), form = Array.from(root.querySelectorAll('form')).find(f => {
-    try { const u = new URL(f.getAttribute('action') || '', origin); return u.origin === origin && u.pathname === '/login/authenticate'; } catch { return false; }
+    try { const u = new URL(f.getAttribute('action') || '', origin); return ['http:','https:'].includes(u.protocol)&&u.host===new URL(origin).host&&!u.username&&!u.password&&u.pathname === '/login/authenticate'&&!u.search; } catch { return false; }
   });
   if (!form || (form.getAttribute('method') || 'get').toLowerCase() !== 'post' || !form.querySelector('input[name="username"]') || !form.querySelector('input[name="password"][type="password"]')) throw new LegacyError('LOGIN_FORMAT', 'O formulário de login mudou. Precisamos conferir o formato recebido.');
   const encoding=(form.getAttribute('enctype')||'application/x-www-form-urlencoded').toLowerCase();
@@ -161,16 +164,22 @@ export function parseReadOnlyDocument(html: string, origin: string) {
 export type CookieJar = Record<string, string>;
 export class LegacyClient {
   lastPath='';
-  constructor(public origin: string, public jar: CookieJar = {}, private transport: typeof fetch = fetch) {
+  private endpoint:string;
+  constructor(public origin: string, public jar: CookieJar = {}, private transport: typeof fetch = fetch,transportOrigin?:string) {
     const url = new URL(origin);
-    if (url.protocol !== 'https:' || url.origin !== origin || url.hostname !== 'my.id-idiomas.com.br') throw new LegacyError('SECURE_ORIGIN_REQUIRED', 'A integração aguarda um endereço HTTPS verificado do MyID.', 503);
+    if (!['http:','https:'].includes(url.protocol) || url.origin !== origin || url.username||url.password) throw new LegacyError('ORIGIN_CONFIGURATION', 'MYID_ORIGIN deve ser uma origem HTTP ou HTTPS sem credenciais, caminho ou parâmetros.', 503);
+    if(url.protocol==='http:'&&!transportOrigin)throw new LegacyError('SECURE_ORIGIN_REQUIRED','Configure um transporte HTTPS protegido para acessar o MyID legado.',503);
+    const endpoint=new URL(transportOrigin||origin);
+    if(endpoint.protocol!=='https:'||endpoint.origin!==(transportOrigin||origin)||endpoint.username||endpoint.password)throw new LegacyError('TRANSPORT_CONFIGURATION','MYID_TRANSPORT_ORIGIN deve ser uma origem HTTPS sem credenciais, caminho ou parâmetros.',503);
+    this.endpoint=endpoint.origin;
   }
   private cookies(response: Response) {
     const headers = response.headers as Headers & { getSetCookie?: () => string[] };
     const values = headers.getSetCookie?.() || (headers.get('set-cookie') || '').split(/,(?=\s*[^;,=\s]+=)/);
     for (const value of values) {
       const match = value.match(/^\s*([!#$%&'*+.^_`|~\w-]+)=([^;\r\n]*)/); if (!match || match[2].length > 4096) continue;
-      if (/domain=/i.test(value) && !/domain=\.?my\.id-idiomas\.com\.br(?:;|$)/i.test(value)) continue;
+      const domain=value.match(/;\s*domain=([^;]+)/i)?.[1]?.trim().replace(/^\./,'').toLowerCase();
+      if(domain&&![new URL(this.origin).hostname,new URL(this.endpoint).hostname].includes(domain))continue;
       if (/max-age=0(?:;|$)/i.test(value)) delete this.jar[match[1]]; else this.jar[match[1]] = match[2];
     }
     if (Object.keys(this.jar).length > 20) throw new LegacyError('COOKIE_LIMIT', 'O portal retornou uma sessão incompatível.');
@@ -184,13 +193,15 @@ export class LegacyClient {
       const cookie = Object.entries(this.jar).map(([k,v]) => k + '=' + v).join('; '); if (cookie) headers.Cookie = cookie;
       if (body) { headers['Content-Type'] = 'application/x-www-form-urlencoded'; headers.Origin = this.origin; headers.Referer = this.origin + LOGIN_ENTRY_PATH; }
       let response: Response;
-      try { response = await this.transport(this.origin + target, { method, body: body?.toString(), headers, redirect: 'manual', signal: AbortSignal.timeout(15000) }); }
+      try { response = await this.transport(this.endpoint + target, { method, body: body?.toString(), headers, redirect: 'manual', signal: AbortSignal.timeout(15000) }); }
       catch { throw new LegacyError('UPSTREAM_UNAVAILABLE', 'Não foi possível conectar ao MyID original. Tente novamente mais tarde.'); }
       this.cookies(response);
       if ([301,302,303,307,308].includes(response.status)) {
         await response.body?.cancel();
         const location = response.headers.get('location'); if (!location) throw new LegacyError('REDIRECT_INVALID', 'O portal retornou um redirecionamento inválido.');
         const next = new URL(location, this.origin + target);
+        if(next.username||next.password)throw new LegacyError('REDIRECT_BLOCKED','O portal retornou um redirecionamento com credenciais embutidas.');
+        if(next.origin===this.endpoint||next.host===new URL(this.origin).host&&['http:','https:'].includes(next.protocol)){const canonical=new URL(this.origin);next.protocol=canonical.protocol;next.host=canonical.host;}
         if (next.origin !== this.origin) throw new LegacyError('REDIRECT_BLOCKED', 'O portal redirecionou para um endereço fora da integração.');
         target = next.pathname + next.search;
         if(options.logout){if(next.pathname==='/'||next.pathname.startsWith('/login/'))return response;throw new LegacyError('LOGOUT_UNCONFIRMED','O portal não confirmou o encerramento da sessão.');}

@@ -6,19 +6,37 @@ O frontend mantém a autenticação da plataforma Sites. A conexão com o MyID o
 
 O adaptador foi implementado a partir dos dois documentos de mapeamento recebidos em 01/11/2026 e do formulário público anteriormente capturado. Os parsers e o fluxo de importação foram testados com **fixtures construídas para teste**, não com respostas autenticadas reais. Nenhuma consulta ou autenticação contra o host bloqueado pelo Opera foi executada para esta implementação. Nenhum PDF real foi importado neste trabalho.
 
-A conexão externa permanece desativada. O endereço observado usa HTTP e ainda não há endereço HTTPS verificado nem confirmação do HTML autenticado. A aplicação não envia credenciais enquanto a configuração estiver pendente. Não usar este adaptador como relay para contornar restrições de acesso das ferramentas.
+A conexão externa permanece desativada por orientação expressa do responsável, que informou não ter URL HTTPS de túnel ou binding seguro disponível. A aplicação não envia credenciais enquanto a configuração estiver pendente. Não usar este adaptador como relay para contornar restrições de acesso das ferramentas.
 
 ## Configuração do servidor
 
 Configurar pela ferramenta de ambiente do Sites, nunca no código ou no navegador:
 
-- `MYID_ORIGIN`: origem HTTPS validada do portal, sem caminho ou barra final. A implementação atual aceita somente o host `my.id-idiomas.com.br`.
+- `MYID_ORIGIN`: origem lógica do backend legado, sem caminho, parâmetros ou barra final. Configurada como `http://my.id-idiomas.com.br` por orientação do responsável. Nenhuma requisição é enviada diretamente a uma origem HTTP.
+- `MYID_TRANSPORT_ORIGIN`: origem HTTPS do relay seguro, sem caminho ou credenciais na URL. Obrigatória quando MYID_ORIGIN usa HTTP. Todas as requisições, incluindo POST e redirecionamentos, passam por essa origem. O relay deve preservar caminhos, corpos, Content-Type, Location e Set-Cookie do backend. Links absolutos do host legado são interpretados como caminhos e não provocam requisições HTTP. Para acesso HTTPS direto, esta variável é opcional.
 - `MYID_SESSION_KEY`: chave aleatória de 32 bytes em base64. Tratar como segredo. A rotação invalida as conexões armazenadas.
 - `MYID_CONNECTION_VERIFIED`: somente definir como `true` após confirmar acesso permitido, transporte HTTPS, resposta de autenticação e compatibilidade dos parsers com HTML real.
 
-A chave `MYID_SESSION_KEY` foi configurada no ambiente de produção como segredo. `MYID_ORIGIN` e `MYID_CONNECTION_VERIFIED` permanecem sem ativação: a chave prepara a criptografia e não habilita o envio de credenciais. A configuração não utiliza o cookie exposto anteriormente no chat.
+A chave `MYID_SESSION_KEY` foi configurada no ambiente de produção como segredo. `MYID_ORIGIN` está configurada. `MYID_TRANSPORT_ORIGIN` e `MYID_CONNECTION_VERIFIED` permanecem sem ativação: o endereço legado e a chave não habilitam o envio de credenciais. A configuração não utiliza o cookie exposto anteriormente no chat.
 
-## Rotas novas
+## Consultas individuais (versão 21)
+
+Estas rotas são internas da ponte, não APIs JSON presumidas no legado. Exigem identidade autenticada do Sites e sessão MyID individual. Executam as requisições originais e devolvem JSON ou PDF original; não consultam fixtures. Nenhuma rota aceita URL de destino.
+
+- `GET /api/myid/profile`: consulta o perfil descoberto no login e atualiza suas matrículas.
+- `GET /api/myid/profile/fields`: lê os campos cadastrais somente se houver link de edição no próprio perfil, sem salvar alterações.
+- `GET /api/myid/home`: conteúdo de leitura da página inicial.
+- `GET /api/myid/enrollments`: matrículas descobertas, com recursos disponíveis.
+- `GET /api/myid/enrollments/{id}/report-cards`: boletins separados, critérios, nota oficial, comentários, professor e vínculos de impressão.
+- `GET /api/myid/enrollments/{id}/evaluation`: avaliação e documentos retornados pelo legado.
+- `GET /api/myid/enrollments/{id}/course`: aulas, títulos, unidades e links internos.
+- `GET /api/myid/enrollments/{id}/lessons/{aulaId}`: conteúdo e anexos da aula previamente descoberta no curso.
+- `GET /api/myid/enrollments/{id}/boletos`, `/contract`, `/contract-review`: documento HTML convertido em blocos ou PDF original. Revisão contratual é somente leitura.
+- `GET /api/myid/documents/{resourceId}`: PDF ou impressão previamente descoberta na sessão. O identificador é derivado do usuário, perfil, matrícula, tipo e caminho e não permite selecionar outra URL.
+
+Cookies atualizados são novamente selados após cada consulta. O mesmo cliente e cookie são usados durante redirecionamentos; cada leitura reutiliza a sessão sem novo login. Expiração invalida o acesso local e exige reconexão. A API recusa matrícula de outra sessão, aula não descoberta, documento desconhecido e consulta cross-site. O fluxo de importação existente continua alimentando o frontend sem mudanças visuais.
+
+## Rotas de conexão
 
 `GET /api/myid/connection` retorna disponibilidade e progresso, sem cookies ou credenciais.
 
@@ -88,3 +106,12 @@ A amostra pública de formulário confirma `username`, `password` e checkbox opc
 Antes de ativar, validar os parsers com HTML real do perfil, lista de aulas, aula com PDF, Report Card e Evaluation. Validar o canal HTTPS e o fluxo de credenciais inválidas. Respostas de layouts desconhecidos devem permanecer como avisos, sem inventar dados.
 
 Teste: `node test-myid-integration.cjs`. Todos os requests de origem nesse teste são interceptados por mocks; ele não usa contas reais. Tipagem: `npx tsc --noEmit`.
+
+## Ativação operacional
+
+1. Provisionar uma URL HTTPS de relay protegido que encaminhe para o MYID_ORIGIN já configurado (ou substituir MYID_ORIGIN por HTTPS direto funcional).
+2. Configurar MYID_TRANSPORT_ORIGIN no ambiente de produção, quando houver relay. Não colocar senha ou token na URL. Se o canal exigir um mecanismo adicional de autenticação, confirmar o contrato desse canal para configurar o cliente.
+3. Confirmar o formulário real e o canal; configurar MYID_CONNECTION_VERIFIED=true e publicar a mesma versão para aplicar o ambiente.
+4. O titular faz login pela interface existente. Conferir perfil/matrículas, sincronização e respostas reais de cada recurso para validar seletores e métodos.
+
+Não foram usados cookies expostos no histórico. Nenhum login ou documento autenticado real foi validado nesta revisão. O endereço informado foi configurado sem ativar o envio de credenciais.

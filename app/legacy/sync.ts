@@ -5,20 +5,21 @@ import { boundedBody, decodeHtml, LegacyClient, LegacyError, parseProfile, findP
 import { seal, unseal, stableId, validKey } from './vault';
 
 type Job = { kind: 'course' | 'lesson' | 'file' | 'report' | 'evaluation' | 'boleto' | 'contract' | 'print' | 'review' | 'profile-edit'; path: string; enrollment: string; lesson?: Lesson; name?: string; lessonKey?: string; documentKind?:string };
-type Session = { accountKey:string;jar: CookieJar; profilePath: string;profileEditPath?:string; enrollments: Enrollment[]; queue: Job[]; completed: number; total: number; imported: number; warnings: string[]; startedAt: string; finishedAt?: string };
+type Resource = {id:string;enrollment:string;type:'lesson'|'document'|'pdf';path:string;name:string;lesson?:Lesson};
+type Session = { resources?:Resource[];accountKey:string;jar: CookieJar; profilePath: string;profileEditPath?:string; enrollments: Enrollment[]; queue: Job[]; completed: number; total: number; imported: number; warnings: string[]; startedAt: string; finishedAt?: string };
 type Row = { sealed: string; expires_at: number; failures: number; retry_at: number };
 const now = () => new Date().toISOString();
 
 export function connectionStatus() {
-  if (env.MYID_CONNECTION_VERIFIED !== 'true') return { configured: false, reason: 'A conexão com o portal original ainda precisa ser validada em HTTPS.' };
-  if (!env.MYID_ORIGIN || !validKey(env.MYID_SESSION_KEY)) return { configured: false, reason: 'A configuração segura da integração ainda não foi concluída.' };
-  try { new LegacyClient(env.MYID_ORIGIN); } catch { return { configured: false, reason: 'A integração requer o endereço HTTPS verificado do MyID.' }; }
+  if (!env.MYID_ORIGIN || !validKey(env.MYID_SESSION_KEY)) return { configured: false, code:'CONFIGURATION_MISSING',reason: 'MYID_ORIGIN ou a chave de sessão não está configurada no ambiente de produção.' };
+  try { new LegacyClient(env.MYID_ORIGIN,{},fetch,env.MYID_TRANSPORT_ORIGIN); } catch(error) { return { configured: false, code:error instanceof LegacyError?error.code:'TRANSPORT_CONFIGURATION',reason:error instanceof LegacyError?error.message:'O endereço de transporte configurado é inválido.' }; }
+  if (env.MYID_CONNECTION_VERIFIED !== 'true') return { configured: false,code:'TRANSPORT_CONFIRMATION_REQUIRED',reason: 'O transporte configurado aguarda confirmação de ativação no ambiente de produção.' };
   return { configured: true, reason: '' };
 }
 function configuration() {
-  const status = connectionStatus(); if (!status.configured) throw new LegacyError('CONNECTION_PENDING', status.reason, 503);
+  const status = connectionStatus(); if (!status.configured) throw new LegacyError(status.code||'CONNECTION_PENDING', status.reason, 503);
   if (!env.DB || !env.BUCKET) throw new LegacyError('STORAGE_UNAVAILABLE', 'O armazenamento da integração está indisponível.', 503);
-  return { db: env.DB, bucket: env.BUCKET, origin: env.MYID_ORIGIN!, key: env.MYID_SESSION_KEY! };
+  return { db: env.DB, bucket: env.BUCKET, origin: env.MYID_ORIGIN!, transportOrigin:env.MYID_TRANSPORT_ORIGIN,key: env.MYID_SESSION_KEY! };
 }
 async function row(owner: string) { return env.DB?.prepare('SELECT sealed,expires_at,failures,retry_at FROM myid_legacy_session WHERE owner_id=?').bind(owner).first<Row>(); }
 async function load(owner: string) {
@@ -51,7 +52,7 @@ function progress(s: Session) { return { completed: s.completed, total: s.total,
 async function lease(owner: string) {
   const config = configuration();
   const result = await config.db.prepare('UPDATE myid_legacy_session SET locked_until=? WHERE owner_id=? AND locked_until<?').bind(Date.now()+90000,owner,Date.now()).run();
-  if (!result.meta.changes) throw new LegacyError('SYNC_BUSY', 'Já existe uma operação em andamento. Aguarde alguns instantes.', 409);
+  if (!result.meta.changes){const current=await row(owner);if(!current?.sealed||current.expires_at<=Date.now())throw new LegacyError('SESSION_EXPIRED','Conecte sua conta MyID.',401);throw new LegacyError('SYNC_BUSY', 'Já existe uma operação em andamento. Aguarde alguns instantes.', 409);}
 }
 async function release(owner: string) { await env.DB!.prepare('UPDATE myid_legacy_session SET locked_until=0 WHERE owner_id=?').bind(owner).run(); }
 
@@ -62,7 +63,7 @@ export async function connect(owner: string, username: string, password: string)
   try {
     const current = await row(owner);
     if (current!.retry_at > Date.now()) throw new LegacyError('LOGIN_WAIT', 'Aguarde um minuto antes de tentar entrar novamente.', 429);
-    const client = new LegacyClient(config.origin), profile = await client.login(username,password);
+    const client = new LegacyClient(config.origin,{},fetch,config.transportOrigin), profile = await client.login(username,password);
     const accountKey=owner+'|profile:'+await stableId(profile.profilePath);
     const session: Session = { accountKey,jar: client.jar, profilePath: profile.profilePath, enrollments: profile.enrollments, queue: [], completed:0,total:0,imported:0,warnings:[],startedAt:now() };
     await updateAcademic(accountKey,s=>mergeProfile(s,profile));
@@ -113,7 +114,7 @@ function mergeProfile(s: any, profile: ReturnType<typeof parseProfile>) {
 export async function start(owner: string) {
   await lease(owner);
   try {
-    const {config,session}=await load(owner), client=new LegacyClient(config.origin,session.jar);
+    const {config,session}=await load(owner), client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin);
     const profileHTML=await client.html(session.profilePath),profile=parseProfile(profileHTML,config.origin);
     session.enrollments=profile.enrollments;session.jar=client.jar;session.queue=[];session.completed=0;session.total=0;session.imported=0;session.warnings=[];session.startedAt=now();delete session.finishedAt;
     session.profileEditPath=findProfileEditPath(profileHTML,config.origin,session.profilePath);
@@ -136,13 +137,13 @@ export async function step(owner: string) {
     const {config,session}=await load(owner), job=session.queue[0];if(!job)return progress(session);
     if(job.kind==='profile-edit'){
       if(job.path!==session.profileEditPath)throw new LegacyError('PROFILE_FORBIDDEN','O perfil não pertence à sessão conectada.',403);
-      const client=new LegacyClient(config.origin,session.jar);
+      const client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin);
       try{const fields=parseProfileFields(await client.html(job.path));await updateAcademic(session.accountKey,s=>s.profile.fields=fields);}catch(error){if(error instanceof LegacyError&&error.code==='SESSION_EXPIRED')await config.db.prepare('UPDATE myid_legacy_session SET expires_at=0 WHERE owner_id=?').bind(owner).run();if(!(error instanceof LegacyError)||['SESSION_EXPIRED','RATE_LIMIT','UPSTREAM_UNAVAILABLE','STATE_CONFLICT'].includes(error.code))throw error;session.warnings.push(error.message);}
       session.jar=client.jar;session.queue.shift();session.completed++;if(!session.queue.length)session.finishedAt=now();await store(owner,session);return progress(session);
     }
     const enrollment=session.enrollments.find(e=>e.id===job.enrollment);
     if(!enrollment)throw new LegacyError('ENROLLMENT_FORBIDDEN','A matrícula não pertence à sessão conectada.',403);
-    const client=new LegacyClient(config.origin,session.jar);
+    const client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin);
     try {
       if(job.kind==='file') {
         const response=await client.request(job.path);if((response.headers.get('content-type')||'').includes('text/html')){parseFiles(await decodeHtml(response),config.origin);throw new LegacyError('PDF_EXPECTED','O anexo não retornou um PDF.');}const bytes=await boundedBody(response,20*1024*1024);
@@ -200,6 +201,103 @@ async function upsertLesson(owner:string,enrollment:Enrollment,job:Job){
   const lesson=job.lesson!;
   await updateAcademic(owner,s=>{const item={id:job.lessonKey,courseId:courseId(s,enrollment),title:lesson.title,unit:lesson.unit,sequence:lesson.sequence,date:'',description:'',materialIds:[],source:'myid',syncedAt:now(),archived:false};const old=s.lessons.find((l:any)=>l.id===item.id);if(old)Object.assign(old,{...item,materialIds:old.materialIds});else s.lessons.push(item);});
 }
+
+const resourceJSON=(value:unknown)=>Response.json(value,{headers:{'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
+function enrollmentView(e:Enrollment){const {links,...data}=e;return {...data,available:Object.keys(links)};}
+async function registerResource(session:Session,resource:Omit<Resource,'id'>){
+  const id=await stableId(session.accountKey+'|'+resource.enrollment+'|'+resource.type+'|'+resource.path);
+  session.resources??=[];
+  const old=session.resources.find(r=>r.id===id);
+  if(old)Object.assign(old,resource);else{if(session.resources.length>=5000)throw new LegacyError('RESOURCE_LIMIT','Limite de recursos por sessão atingido.');session.resources.push({id,...resource});}
+  return {id,name:resource.name,url:'/api/myid/documents/'+id};
+}
+
+// All target paths come from this user's encrypted session or authenticated HTML.
+// Browser route segments select capabilities, never an arbitrary upstream URL.
+export async function readResource(owner:string,segments:string[]):Promise<Response>{
+  await load(owner);await lease(owner);
+  try{
+    const {config,session}=await load(owner),client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin);
+    const finish=async(response:Response)=>{session.jar=client.jar;await store(owner,session);return response;};
+    const refreshProfile=async()=>{
+      const html=await client.html(session.profilePath),profile=parseProfile(html,config.origin);
+      session.enrollments=profile.enrollments;
+      session.resources=(session.resources||[]).filter(r=>session.enrollments.some(e=>e.id===r.enrollment));
+      session.profileEditPath=findProfileEditPath(html,config.origin,session.profilePath);
+      await updateAcademic(session.accountKey,s=>mergeProfile(s,profile));return profile;
+    };
+    const saveDocument=async(enrollment:Enrollment,kind:string,html:string)=>{
+      const parsed=parseReadOnlyDocument(html,config.origin),files=[];
+      for(const file of parsed.files)files.push(await registerResource(session,{enrollment:enrollment.id,type:'pdf',path:file.path,name:file.name}));
+      await updateAcademic(session.accountKey,s=>{const c=s.courses.find((c:any)=>c.id===courseId(s,enrollment));if(c){c.documents??={};c.documents[kind]={blocks:parsed.blocks,materialIds:c.documents[kind]?.materialIds||[],syncedAt:now()};}});
+      return {blocks:parsed.blocks,files};
+    };
+    const pdfResponse=async(response:Response,name:string)=>{
+      const bytes=await boundedBody(response,20*1024*1024);
+      if(new TextDecoder().decode(bytes.slice(0,5))!=='%PDF-')throw new LegacyError('PDF_EXPECTED','O documento não retornou um PDF válido.');
+      const safeName=name.replace(/[\r\n"\\]/g,'_').slice(0,160),ascii=safeName.replace(/[^\x20-\x7e]/g,'_');
+      return new Response(bytes,{headers:{'Content-Type':'application/pdf','Content-Disposition':`inline; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(safeName)}`,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
+    };
+    if(segments.length===1&&['profile','enrollments'].includes(segments[0])){
+      const profile=await refreshProfile();
+      return await finish(resourceJSON(segments[0]==='profile'?{name:profile.name,enrollments:profile.enrollments.map(enrollmentView)}:{enrollments:profile.enrollments.map(enrollmentView)}));
+    }
+    if(segments.length===1&&segments[0]==='home'){
+      const parsed=parseReadOnlyDocument(await client.html('/perfil/home'),config.origin);
+      return await finish(resourceJSON({blocks:parsed.blocks}));
+    }
+    if(segments.length===2&&segments[0]==='profile'&&segments[1]==='fields'){
+      await refreshProfile();if(!session.profileEditPath)throw new LegacyError('RESOURCE_UNAVAILABLE','O perfil não disponibilizou o link de edição.',404);
+      const fields=parseProfileFields(await client.html(session.profileEditPath));await updateAcademic(session.accountKey,s=>s.profile.fields=fields);
+      return await finish(resourceJSON({fields,readOnly:true}));
+    }
+    if(segments.length===2&&segments[0]==='documents'){
+      const resource=session.resources?.find(r=>r.id===segments[1]&&r.type!=='lesson');
+      if(!resource||!session.enrollments.some(e=>e.id===resource.enrollment))throw new LegacyError('RESOURCE_NOT_FOUND','Documento não vinculado à sua sessão.',404);
+      const response=await client.request(resource.path),type=response.headers.get('content-type')||'';
+      if(type.toLowerCase().includes('application/pdf'))return await finish(await pdfResponse(response,resource.name));
+      const html=await decodeHtml(response); // Also detects a login returned with HTTP 200.
+      const document=await saveDocument(session.enrollments.find(e=>e.id===resource.enrollment)!,'document-'+resource.id,html);
+      if(resource.type==='pdf')throw new LegacyError('PDF_EXPECTED','O anexo retornou HTML em vez de PDF.');
+      return await finish(resourceJSON(document));
+    }
+    if(segments[0]!=='enrollments'||!/^\d+$/.test(segments[1]||'')||![3,4].includes(segments.length))throw new LegacyError('RESOURCE_NOT_FOUND','Consulta não reconhecida.',404);
+    const enrollment=session.enrollments.find(e=>e.id===segments[1]);
+    if(!enrollment)throw new LegacyError('ENROLLMENT_FORBIDDEN','A matrícula não pertence à sua sessão.',403);
+    const kind=segments[2];
+    if(kind==='lessons'&&segments.length===4){
+      const resource=session.resources?.find(r=>r.type==='lesson'&&r.enrollment===enrollment.id&&r.lesson?.id===segments[3]);
+      if(!resource)throw new LegacyError('LESSON_NOT_FOUND','Consulte o curso antes de acessar uma aula vinculada.',404);
+      const response=await client.request(resource.path),files=[];
+      if((response.headers.get('content-type')||'').toLowerCase().includes('application/pdf')){
+        await response.body?.cancel();files.push(await registerResource(session,{type:'pdf',enrollment:enrollment.id,path:resource.path,name:resource.name+'.pdf'}));
+      }else for(const file of parseFiles(await decodeHtml(response),config.origin))files.push(await registerResource(session,{type:'pdf',enrollment:enrollment.id,path:file.path,name:file.name}));
+      await upsertLesson(session.accountKey,enrollment,{kind:'lesson',path:resource.path,enrollment:enrollment.id,lesson:resource.lesson,lessonKey:'legacy-lesson-'+enrollment.id+'-'+resource.lesson!.id});
+      return await finish(resourceJSON({lesson:{id:resource.lesson!.id,title:resource.lesson!.title,unit:resource.lesson!.unit,sequence:resource.lesson!.sequence},files}));
+    }
+    const kinds:Record<string,string>={'report-cards':'reportCardMatricula',evaluation:'evaluationMatricula',course:'curso',boletos:'boletoPrint',contract:'contratoPrint','contract-review':'revisarContrato'};
+    const path=enrollment.links[kinds[kind]];
+    if(segments.length!==3||!path)throw new LegacyError('RESOURCE_UNAVAILABLE','A matrícula não disponibilizou esse recurso.',404);
+    const response=await client.request(path),type=(response.headers.get('content-type')||'').toLowerCase();
+    if(type.includes('application/pdf'))return await finish(await pdfResponse(response,kind+'.pdf'));
+    const html=await decodeHtml(response);
+    if(kind==='course'){
+      const lessons=parseLessons(html,config.origin,enrollment.id),result=[];
+      for(const lesson of lessons){await registerResource(session,{type:'lesson',enrollment:enrollment.id,path:lesson.path,name:lesson.title,lesson});const {path,...data}=lesson;result.push({...data,url:'/api/myid/enrollments/'+enrollment.id+'/lessons/'+lesson.id});}
+      return await finish(resourceJSON({enrollment:enrollmentView(enrollment),lessons:result}));
+    }
+    if(kind==='report-cards'){
+      const reports=parseReports(html,config.origin),result=[];
+      for(const report of reports){const {printPath,...data}=report;const print=printPath?await registerResource(session,{type:'document',enrollment:enrollment.id,path:printPath,name:'Report Card '+report.number+'.pdf'}):undefined;result.push({...data,...(print?{print}:{}),teacher:enrollment.teacher});}
+      await updateAcademic(session.accountKey,s=>{const c=s.courses.find((c:any)=>c.id===courseId(s,enrollment));if(c){c.reportCards=reports.map(({printPath,...r})=>r);const report=reports.filter(r=>r.available).at(-1);c.scores=report?.scores||[];c.officialGrade=report?.officialGrade??null;c.comment=report?.comment||'';c.syncedAt=now();}});
+      return await finish(resourceJSON({reportCards:result}));
+    }
+    return await finish(resourceJSON(await saveDocument(enrollment,kind==='boletos'?'boleto':kind==='contract-review'?'review':kind,html)));
+  }catch(error){
+    if(error instanceof LegacyError&&error.code==='SESSION_EXPIRED')await env.DB!.prepare('UPDATE myid_legacy_session SET expires_at=0 WHERE owner_id=?').bind(owner).run();
+    throw error;
+  }finally{await release(owner);}
+}
 export async function disconnect(owner:string) {
   if(!env.DB)return {connected:false,remoteLogout:'not_attempted'};
   const existing=await env.DB.prepare('SELECT sealed,expires_at,locked_until FROM myid_legacy_session WHERE owner_id=?').bind(owner).first<Row&{locked_until:number}>();
@@ -210,7 +308,7 @@ export async function disconnect(owner:string) {
   try{
     if(existing.sealed&&existing.expires_at>Date.now()&&connectionStatus().configured){
       const config=configuration(),session=await unseal<Session>(existing.sealed,config.key,owner);
-      await new LegacyClient(config.origin,session.jar).logout();remoteLogout='requested';
+      await new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin).logout();remoteLogout='requested';
     }
   }catch{remoteLogout='unconfirmed';warning='A conexão local foi encerrada, mas o encerramento no portal original não pôde ser confirmado.';}
   finally{await env.DB.prepare('UPDATE myid_legacy_session SET sealed=\'\',expires_at=0,locked_until=0,updated_at=? WHERE owner_id=?').bind(now(),owner).run();}
