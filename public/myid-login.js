@@ -22,7 +22,7 @@ function openConnected(){const dialog=get('#login-dialog');dialog.close();window
 function init(){
  const form=get('#myid-entry-form'),dialog=get('#login-dialog');if(!form||!dialog)return;
  form.onsubmit=async event=>{event.preventDefault();if(busy)return;const username=get('#myid-entry-username').value.trim(),password=get('#myid-entry-password').value;if(!username||!password){message('Informe seu usuário e sua senha.',true);return;}
-  const ticket=generation;busy=true;controls();message('Verificando conexão segura…');get('#myid-entry-submit').textContent='Verificando…';
+  const ticket=generation;busy=true;controls();message('Verificando conexão…');get('#myid-entry-submit').textContent='Verificando…';
   try{const status=await request();if(ticket!==generation||!dialog.hasAttribute('open'))return;
    if(!status.configured)throw new Error('Não foi possível entrar: '+status.reason+' Sua senha não foi enviada.');
    if(status.connected){openConnected();return;}

@@ -110,6 +110,14 @@ const html=(text,options={})=>new Response(text,{...options,headers:{'content-ty
  user=null;assert.equal((await api.GET()).status,401);
  assert.equal((await sync.disconnect('owner')).remoteLogout,'requested');assert.equal(sessions.get('owner').sealed,'');
  const normalTransport=transport;transport=async(url,options)=>url.endsWith('/logout/index')?new Response(null,{status:503}):normalTransport(url,options);await sync.connect('owner','test-user','test-password');assert.equal((await sync.disconnect('owner')).remoteLogout,'unconfirmed');assert.equal(sessions.get('owner').sealed,'','Local session must be cleared even when remote logout fails');
+
+ // HTTP requires a server-only explicit opt-in; a frontend payload cannot enable it.
+ env.MYID_ORIGIN=logical;env.MYID_CONNECTION_VERIFIED='true';env.MYID_ALLOW_INSECURE_HTTP=undefined;assert.equal(sync.connectionStatus().configured,false);
+ env.MYID_ALLOW_INSECURE_HTTP='true';assert.equal(sync.connectionStatus().configured,true);
+ const httpCalls=[];transport=async(url,options)=>{httpCalls.push({url,method:options.method,cookie:options.headers.Cookie});assert(url.startsWith(logical+'/'));return normalTransport(url.replace(logical,origin),options)};
+ const inspected=await sync.inspectConnection();assert.equal(inspected.reachable,true);assert.equal(inspected.contract.credentialFields[0],'username');assert(!JSON.stringify(inspected).includes('test-csrf'));
+ await sync.connect('live:http','test-user','test-password');const postCount=httpCalls.filter(c=>c.method==='POST').length;assert.equal(postCount,1);let ownProfile=await (await sync.readResource('live:http',['profile'])).json();assert.equal(ownProfile.name,'Aluno Teste');assert.equal(httpCalls.filter(c=>c.method==='POST').length,1);assert(httpCalls.some(c=>c.cookie?.includes('test-only')));assert(!JSON.stringify(await sync.status('live:http')).includes('test-only'));await sync.disconnect('live:http');
  env.MYID_CONNECTION_VERIFIED=undefined;assert.equal(sync.connectionStatus().configured,false);
+
  console.log('Direct scoped resource endpoints and secure relay passed. Integration fixtures passed: form encoding/CSRF, failed login redirect, authenticated home/profile discovery, report/print/Evaluation/contract/boleto, course PDFs, idempotence, encrypted sessions and remote logout with local cleanup on failure. No live upstream requests made.');
 })().catch(e=>{console.error(e);process.exitCode=1});

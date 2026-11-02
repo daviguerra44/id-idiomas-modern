@@ -1,12 +1,15 @@
 import { getChatGPTUser } from '../../../chatgpt-auth';
 import { liveMyIDAccess } from '../../../live-myid-access';
 import { LegacyError } from '../../../legacy/protocol';
-import { status,connect,start,step,disconnect } from '../../../legacy/sync';
+import { status,connect,start,step,disconnect,inspectConnection } from '../../../legacy/sync';
 export const dynamic='force-dynamic';
 const json=(value:unknown,code=200)=>Response.json(value,{status:code,headers:{'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
-export async function GET(){
+export async function GET(request?:Request){
   const access=liveMyIDAccess(await getChatGPTUser());if(!access)return json({error:'Entre na sua conta.'},401);
-  try{return json(await status(access.ownerId));}catch(error){return failure(error);}
+  try{
+    if(request&&new URL(request.url).searchParams.get('probe')==='1')return json(await inspectConnection());
+    return json(await status(access.ownerId));
+  }catch(error){return failure(error);}
 }
 export async function POST(request:Request){
   const access=liveMyIDAccess(await getChatGPTUser());if(!access)return json({error:'Entre na sua conta.'},401);

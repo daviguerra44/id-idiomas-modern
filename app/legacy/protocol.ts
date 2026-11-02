@@ -165,12 +165,13 @@ export type CookieJar = Record<string, string>;
 export class LegacyClient {
   lastPath='';
   private endpoint:string;
-  constructor(public origin: string, public jar: CookieJar = {}, private transport: typeof fetch = fetch,transportOrigin?:string) {
+  constructor(public origin: string, public jar: CookieJar = {}, private transport: typeof fetch = fetch,transportOrigin?:string,allowInsecureHttp=false) {
     const url = new URL(origin);
     if (!['http:','https:'].includes(url.protocol) || url.origin !== origin || url.username||url.password) throw new LegacyError('ORIGIN_CONFIGURATION', 'MYID_ORIGIN deve ser uma origem HTTP ou HTTPS sem credenciais, caminho ou parâmetros.', 503);
-    if(url.protocol==='http:'&&!transportOrigin)throw new LegacyError('SECURE_ORIGIN_REQUIRED','Configure um transporte HTTPS protegido para acessar o MyID legado.',503);
+    if(url.protocol==='http:'&&!transportOrigin&&!allowInsecureHttp)throw new LegacyError('SECURE_ORIGIN_REQUIRED','Configure um transporte HTTPS protegido para acessar o MyID legado.',503);
     const endpoint=new URL(transportOrigin||origin);
-    if(endpoint.protocol!=='https:'||endpoint.origin!==(transportOrigin||origin)||endpoint.username||endpoint.password)throw new LegacyError('TRANSPORT_CONFIGURATION','MYID_TRANSPORT_ORIGIN deve ser uma origem HTTPS sem credenciais, caminho ou parâmetros.',503);
+    const permittedHttp=allowInsecureHttp&&endpoint.protocol==='http:'&&endpoint.origin===origin&&!transportOrigin;
+    if((endpoint.protocol!=='https:'&&!permittedHttp)||endpoint.origin!==(transportOrigin||origin)||endpoint.username||endpoint.password)throw new LegacyError('TRANSPORT_CONFIGURATION','O transporte deve usar HTTPS ou o HTTP direto explicitamente autorizado no servidor.',503);
     this.endpoint=endpoint.origin;
   }
   private cookies(response: Response) {

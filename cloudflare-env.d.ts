@@ -5,6 +5,7 @@ declare namespace Cloudflare {
     MYID_ORIGIN?: string;
     MYID_TRANSPORT_ORIGIN?: string;
     MYID_CONNECTION_VERIFIED?: string;
+    MYID_ALLOW_INSECURE_HTTP?: string;
     MYID_SESSION_KEY?: string;
   }
 }

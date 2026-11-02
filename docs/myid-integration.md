@@ -1,3 +1,15 @@
+# Configuração atual — versão 22
+
+O responsável autorizou explicitamente o uso de HTTP direto nesta revisão. Produção utiliza MYID_ORIGIN=http://my.id-idiomas.com.br, MYID_ALLOW_INSECURE_HTTP=true e MYID_CONNECTION_VERIFIED=true. O último flag habilita operacionalmente o transporte escolhido; não é prova de autenticação bem-sucedida. A autorização HTTP é exclusivamente de ambiente no backend; nenhum parâmetro do navegador pode ativá-la. O padrão do código continua exigindo HTTPS quando esse opt-in não existe.
+
+O frontend continua em HTTPS. O trecho entre o backend intermediário e o legado usa HTTP sem criptografia por decisão do responsável. Senhas não são persistidas; cookies continuam selados por usuário no banco e nunca retornam ao frontend.
+
+GET /api/myid/connection?probe=1, sob a identidade autorizada do Site, consulta somente o formulário público pela infraestrutura de produção e devolve nomes dos campos e disponibilidade. Não usa sessão salva, não realiza login e não retorna cookies ou tokens.
+
+Verificação real nesta revisão: GET HTTP do formulário retornou 200; o formulário apresentou username, password e remember-me, POST /login/authenticate e urlencoded. Uma credencial sintética aleatória inexistente foi enviada uma vez ao servidor real; o adaptador reconheceu LOGIN_FAILED/401. Nenhuma credencial válida foi usada e nenhum perfil ou PDF autenticado real foi obtido.
+
+As seções de transporte desativado abaixo registram as revisões anteriores e foram substituídas por esta autorização.
+
 # Adaptador MyID
 
 O frontend mantém a autenticação da plataforma Sites. A conexão com o MyID original é individual: cada usuário autorizado pela política de acesso do Site vincula sua própria conta. O identificador estável da plataforma separa as sessões. O perfil descoberto após o login separa os dados acadêmicos e arquivos, inclusive quando a mesma pessoa troca de conta MyID. Não existe perfil de aluno predefinido ou fallback compartilhado.

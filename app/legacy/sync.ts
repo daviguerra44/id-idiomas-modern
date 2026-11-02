@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:workers';
 import {emptyMyIDState} from '../myid-empty';
 import { normalizeMyIDState } from '../myid-state';
-import { boundedBody, decodeHtml, LegacyClient, LegacyError, parseProfile, findProfileEditPath,parseProfileFields,parseLessons, parseFiles, parseReports, parseReadOnlyDocument, type CookieJar, type Enrollment, type Lesson } from './protocol';
+import { boundedBody, decodeHtml, inspectLoginForm, LOGIN_ENTRY_PATH, LegacyClient, LegacyError, parseProfile, findProfileEditPath,parseProfileFields,parseLessons, parseFiles, parseReports, parseReadOnlyDocument, type CookieJar, type Enrollment, type Lesson } from './protocol';
 import { seal, unseal, stableId, validKey } from './vault';
 
 type Job = { kind: 'course' | 'lesson' | 'file' | 'report' | 'evaluation' | 'boleto' | 'contract' | 'print' | 'review' | 'profile-edit'; path: string; enrollment: string; lesson?: Lesson; name?: string; lessonKey?: string; documentKind?:string };
@@ -12,14 +12,20 @@ const now = () => new Date().toISOString();
 
 export function connectionStatus() {
   if (!env.MYID_ORIGIN || !validKey(env.MYID_SESSION_KEY)) return { configured: false, code:'CONFIGURATION_MISSING',reason: 'MYID_ORIGIN ou a chave de sessão não está configurada no ambiente de produção.' };
-  try { new LegacyClient(env.MYID_ORIGIN,{},fetch,env.MYID_TRANSPORT_ORIGIN); } catch(error) { return { configured: false, code:error instanceof LegacyError?error.code:'TRANSPORT_CONFIGURATION',reason:error instanceof LegacyError?error.message:'O endereço de transporte configurado é inválido.' }; }
+  try { new LegacyClient(env.MYID_ORIGIN,{},fetch,env.MYID_TRANSPORT_ORIGIN,env.MYID_ALLOW_INSECURE_HTTP==='true'); } catch(error) { return { configured: false, code:error instanceof LegacyError?error.code:'TRANSPORT_CONFIGURATION',reason:error instanceof LegacyError?error.message:'O endereço de transporte configurado é inválido.' }; }
   if (env.MYID_CONNECTION_VERIFIED !== 'true') return { configured: false,code:'TRANSPORT_CONFIRMATION_REQUIRED',reason: 'O transporte configurado aguarda confirmação de ativação no ambiente de produção.' };
   return { configured: true, reason: '' };
 }
 function configuration() {
   const status = connectionStatus(); if (!status.configured) throw new LegacyError(status.code||'CONNECTION_PENDING', status.reason, 503);
   if (!env.DB || !env.BUCKET) throw new LegacyError('STORAGE_UNAVAILABLE', 'O armazenamento da integração está indisponível.', 503);
-  return { db: env.DB, bucket: env.BUCKET, origin: env.MYID_ORIGIN!, transportOrigin:env.MYID_TRANSPORT_ORIGIN,key: env.MYID_SESSION_KEY! };
+  return { db: env.DB, bucket: env.BUCKET, origin: env.MYID_ORIGIN!, transportOrigin:env.MYID_TRANSPORT_ORIGIN,allowHttp:env.MYID_ALLOW_INSECURE_HTTP==='true',key: env.MYID_SESSION_KEY! };
+}
+// Production reachability check: public form only, no credentials or saved session.
+export async function inspectConnection(){
+  const config=configuration(),client=new LegacyClient(config.origin,{},fetch,config.transportOrigin,config.allowHttp);
+  const contract=inspectLoginForm(await client.html(LOGIN_ENTRY_PATH,{login:true}),config.origin);
+  return {...connectionStatus(),reachable:true,contract,checkedAt:now()};
 }
 async function row(owner: string) { return env.DB?.prepare('SELECT sealed,expires_at,failures,retry_at FROM myid_legacy_session WHERE owner_id=?').bind(owner).first<Row>(); }
 async function load(owner: string) {
@@ -63,7 +69,7 @@ export async function connect(owner: string, username: string, password: string)
   try {
     const current = await row(owner);
     if (current!.retry_at > Date.now()) throw new LegacyError('LOGIN_WAIT', 'Aguarde um minuto antes de tentar entrar novamente.', 429);
-    const client = new LegacyClient(config.origin,{},fetch,config.transportOrigin), profile = await client.login(username,password);
+    const client = new LegacyClient(config.origin,{},fetch,config.transportOrigin,config.allowHttp), profile = await client.login(username,password);
     const accountKey=owner+'|profile:'+await stableId(profile.profilePath);
     const session: Session = { accountKey,jar: client.jar, profilePath: profile.profilePath, enrollments: profile.enrollments, queue: [], completed:0,total:0,imported:0,warnings:[],startedAt:now() };
     await updateAcademic(accountKey,s=>mergeProfile(s,profile));
@@ -114,7 +120,7 @@ function mergeProfile(s: any, profile: ReturnType<typeof parseProfile>) {
 export async function start(owner: string) {
   await lease(owner);
   try {
-    const {config,session}=await load(owner), client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin);
+    const {config,session}=await load(owner), client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin,config.allowHttp);
     const profileHTML=await client.html(session.profilePath),profile=parseProfile(profileHTML,config.origin);
     session.enrollments=profile.enrollments;session.jar=client.jar;session.queue=[];session.completed=0;session.total=0;session.imported=0;session.warnings=[];session.startedAt=now();delete session.finishedAt;
     session.profileEditPath=findProfileEditPath(profileHTML,config.origin,session.profilePath);
@@ -137,13 +143,13 @@ export async function step(owner: string) {
     const {config,session}=await load(owner), job=session.queue[0];if(!job)return progress(session);
     if(job.kind==='profile-edit'){
       if(job.path!==session.profileEditPath)throw new LegacyError('PROFILE_FORBIDDEN','O perfil não pertence à sessão conectada.',403);
-      const client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin);
+      const client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin,config.allowHttp);
       try{const fields=parseProfileFields(await client.html(job.path));await updateAcademic(session.accountKey,s=>s.profile.fields=fields);}catch(error){if(error instanceof LegacyError&&error.code==='SESSION_EXPIRED')await config.db.prepare('UPDATE myid_legacy_session SET expires_at=0 WHERE owner_id=?').bind(owner).run();if(!(error instanceof LegacyError)||['SESSION_EXPIRED','RATE_LIMIT','UPSTREAM_UNAVAILABLE','STATE_CONFLICT'].includes(error.code))throw error;session.warnings.push(error.message);}
       session.jar=client.jar;session.queue.shift();session.completed++;if(!session.queue.length)session.finishedAt=now();await store(owner,session);return progress(session);
     }
     const enrollment=session.enrollments.find(e=>e.id===job.enrollment);
     if(!enrollment)throw new LegacyError('ENROLLMENT_FORBIDDEN','A matrícula não pertence à sessão conectada.',403);
-    const client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin);
+    const client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin,config.allowHttp);
     try {
       if(job.kind==='file') {
         const response=await client.request(job.path);if((response.headers.get('content-type')||'').includes('text/html')){parseFiles(await decodeHtml(response),config.origin);throw new LegacyError('PDF_EXPECTED','O anexo não retornou um PDF.');}const bytes=await boundedBody(response,20*1024*1024);
@@ -217,7 +223,7 @@ async function registerResource(session:Session,resource:Omit<Resource,'id'>){
 export async function readResource(owner:string,segments:string[]):Promise<Response>{
   await load(owner);await lease(owner);
   try{
-    const {config,session}=await load(owner),client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin);
+    const {config,session}=await load(owner),client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin,config.allowHttp);
     const finish=async(response:Response)=>{session.jar=client.jar;await store(owner,session);return response;};
     const refreshProfile=async()=>{
       const html=await client.html(session.profilePath),profile=parseProfile(html,config.origin);
@@ -308,7 +314,7 @@ export async function disconnect(owner:string) {
   try{
     if(existing.sealed&&existing.expires_at>Date.now()&&connectionStatus().configured){
       const config=configuration(),session=await unseal<Session>(existing.sealed,config.key,owner);
-      await new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin).logout();remoteLogout='requested';
+      await new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin,config.allowHttp).logout();remoteLogout='requested';
     }
   }catch{remoteLogout='unconfirmed';warning='A conexão local foi encerrada, mas o encerramento no portal original não pôde ser confirmado.';}
   finally{await env.DB.prepare('UPDATE myid_legacy_session SET sealed=\'\',expires_at=0,locked_until=0,updated_at=? WHERE owner_id=?').bind(now(),owner).run();}
