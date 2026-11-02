@@ -136,6 +136,9 @@ function mergeProfile(s: any, profile: ReturnType<typeof parseProfile>) {
     if(enrollment.registration)c.enrollment=enrollment.registration;
     if(enrollment.title)c.title=enrollment.title;if(enrollment.level)c.level=enrollment.level;if(enrollment.status)c.status=enrollment.status;
     if(enrollment.teacher)c.teacherId=teacherId;
+    if(enrollment.language)c.language=enrollment.language;
+    c.scheduleDetails=enrollment.schedule||null;c.time=enrollment.schedule?.time||'';c.schedule=enrollment.schedule?.raw||'Horário não informado';c.days=[];
+    c.availableResources=Object.keys(enrollment.links);
   }
   if(!s.courses.some((c:any)=>c.id===s.settings.defaultCourse))s.settings.defaultCourse=s.courses[0]?.id||'';
 }
@@ -174,17 +177,7 @@ export async function step(owner: string) {
     const client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin,config.allowHttp);
     try {
       if(job.kind==='file') {
-        const response=await client.request(job.path);if((response.headers.get('content-type')||'').includes('text/html')){parseFiles(await decodeHtml(response),config.origin);throw new LegacyError('PDF_EXPECTED','O anexo não retornou um PDF.');}const bytes=await boundedBody(response,20*1024*1024);
-        if(new TextDecoder().decode(bytes.slice(0,5))!=='%PDF-')throw new LegacyError('PDF_EXPECTED','Um anexo não é PDF e não foi importado.');
-        const id=await stableId(session.accountKey+'|'+job.path), name=(job.name||'Material.pdf').replace(/[\r\n"\\]/g,'_').slice(0,120);
-        await config.bucket.put(session.accountKey+'/'+id,bytes,{httpMetadata:{contentType:'application/pdf'},customMetadata:{name}});
-        await updateAcademic(session.accountKey,s=>{
-          const cId=courseId(s,enrollment), materialId='legacy-pdf-'+id+'-'+(job.lessonKey||enrollment.id+'-'+(job.documentKind||'document'));
-          const material={id:materialId,courseId:cId,lessonId:job.lessonKey||'',title:job.name||'Material da aula',type:'pdf',url:'/api/myedi/files/'+id,section:job.lesson?.title||'Documentos',category:job.lessonKey?'course':'document',source:'myid',syncedAt:now(),archived:false};
-          const old=s.materials.find((m:any)=>m.id===materialId);if(old)Object.assign(old,material);else s.materials.push(material);
-          if(job.lessonKey){const lesson=s.lessons.find((l:any)=>l.id===job.lessonKey);if(lesson&&!lesson.materialIds.includes(materialId))lesson.materialIds.push(materialId);}
-          if(job.documentKind){const c=s.courses.find((c:any)=>c.id===cId);if(c){c.documents??={};const document=c.documents[job.documentKind]??={blocks:[],materialIds:[]};document.materialIds??=[];if(!document.materialIds.includes(materialId))document.materialIds.push(materialId);document.syncedAt=now();}}
-        });session.imported++;
+        await importFile(config,session,enrollment,client,job);
       } else {
         const response=await client.request(job.path), type=(response.headers.get('content-type')||'').toLowerCase();
         if(type.includes('application/pdf')){
@@ -225,9 +218,22 @@ export async function step(owner: string) {
     return progress(session);
   }finally{await release(owner);}
 }
+async function importFile(config:ReturnType<typeof configuration>,session:Session,enrollment:Enrollment,client:LegacyClient,job:Job){
+        const response=await client.request(job.path);if((response.headers.get('content-type')||'').includes('text/html')){parseFiles(await decodeHtml(response),config.origin);throw new LegacyError('PDF_EXPECTED','O anexo não retornou um PDF.');}const bytes=await boundedBody(response,20*1024*1024);
+        if(new TextDecoder().decode(bytes.slice(0,5))!=='%PDF-')throw new LegacyError('PDF_EXPECTED','Um anexo não é PDF e não foi importado.');
+        const id=await stableId(session.accountKey+'|'+job.path), name=(job.name||'Material.pdf').replace(/[\r\n"\\]/g,'_').slice(0,120);
+        await config.bucket.put(session.accountKey+'/'+id,bytes,{httpMetadata:{contentType:'application/pdf'},customMetadata:{name}});
+        await updateAcademic(session.accountKey,s=>{
+          const cId=courseId(s,enrollment), materialId='legacy-pdf-'+id+'-'+(job.lessonKey||enrollment.id+'-'+(job.documentKind||'document'));
+          const material={id:materialId,courseId:cId,lessonId:job.lessonKey||'',title:job.name||'Material da aula',type:'pdf',url:'/api/myedi/files/'+id,section:job.lesson?.title||'Documentos',category:job.lessonKey?'course':'document',source:'myid',syncedAt:now(),archived:false};
+          const old=s.materials.find((m:any)=>m.id===materialId);if(old)Object.assign(old,material);else s.materials.push(material);
+          if(job.lessonKey){const lesson=s.lessons.find((l:any)=>l.id===job.lessonKey);if(lesson&&!lesson.materialIds.includes(materialId))lesson.materialIds.push(materialId);}
+          if(job.documentKind){const c=s.courses.find((c:any)=>c.id===cId);if(c){c.documents??={};const document=c.documents[job.documentKind]??={blocks:[],materialIds:[]};document.materialIds??=[];if(!document.materialIds.includes(materialId))document.materialIds.push(materialId);document.syncedAt=now();}}
+        });session.imported++;
+}
 async function upsertLesson(owner:string,enrollment:Enrollment,job:Job){
   const lesson=job.lesson!;
-  await updateAcademic(owner,s=>{const item={id:job.lessonKey,courseId:courseId(s,enrollment),title:lesson.title,unit:lesson.unit,sequence:lesson.sequence,date:'',description:'',materialIds:[],source:'myid',syncedAt:now(),archived:false};const old=s.lessons.find((l:any)=>l.id===item.id);if(old)Object.assign(old,{...item,materialIds:old.materialIds});else s.lessons.push(item);});
+  await updateAcademic(owner,s=>{const item={id:job.lessonKey,courseId:courseId(s,enrollment),title:lesson.title,unit:lesson.unit,sequence:lesson.sequence,lessonNumber:lesson.lessonNumber,sourceLabel:lesson.sourceLabel,sourceUnit:lesson.sourceUnit,date:'',description:'',materialIds:[],source:'myid',syncedAt:now(),archived:false};const old=s.lessons.find((l:any)=>l.id===item.id);if(old)Object.assign(old,{...item,materialIds:old.materialIds});else s.lessons.push(item);});
 }
 
 const resourceJSON=(value:unknown)=>Response.json(value,{headers:{'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
@@ -296,12 +302,19 @@ export async function readResource(owner:string,segments:string[]):Promise<Respo
     if(kind==='lessons'&&segments.length===4){
       const resource=session.resources?.find(r=>r.type==='lesson'&&r.enrollment===enrollment.id&&r.lesson?.id===segments[3]);
       if(!resource)throw new LegacyError('LESSON_NOT_FOUND','Consulte o curso antes de acessar uma aula vinculada.',404);
-      const response=await client.request(resource.path),files=[];
-      if((response.headers.get('content-type')||'').toLowerCase().includes('application/pdf')){
-        await response.body?.cancel();files.push(await registerResource(session,{type:'pdf',enrollment:enrollment.id,path:resource.path,name:resource.name+'.pdf'}));
-      }else for(const file of parseFiles(await decodeHtml(response),config.origin))files.push(await registerResource(session,{type:'pdf',enrollment:enrollment.id,path:file.path,name:file.name}));
-      await upsertLesson(session.accountKey,enrollment,{kind:'lesson',path:resource.path,enrollment:enrollment.id,lesson:resource.lesson,lessonKey:'legacy-lesson-'+enrollment.id+'-'+resource.lesson!.id});
-      return await finish(resourceJSON({lesson:{id:resource.lesson!.id,title:resource.lesson!.title,unit:resource.lesson!.unit,sequence:resource.lesson!.sequence},files}));
+      const response=await client.request(resource.path);let attachments:{path:string;name:string}[]=[];
+      if((response.headers.get('content-type')||'').toLowerCase().includes('application/pdf')){await response.body?.cancel();attachments=[{path:resource.path,name:resource.name+'.pdf'}];}
+      else attachments=parseFiles(await decodeHtml(response),config.origin);
+      if(!attachments.length)throw new LegacyError('FILES_NOT_FOUND','Nenhum PDF foi identificado na resposta da aula.');
+      if(attachments.length>20)throw new LegacyError('FILE_LIMIT','A aula excede o limite de anexos por consulta.');
+      const lessonKey='legacy-lesson-'+enrollment.id+'-'+resource.lesson!.id;
+      await upsertLesson(session.accountKey,enrollment,{kind:'lesson',path:resource.path,enrollment:enrollment.id,lesson:resource.lesson,lessonKey});
+      const files=[];
+      for(const file of attachments){
+        files.push(await registerResource(session,{type:'pdf',enrollment:enrollment.id,path:file.path,name:file.name}));
+        await importFile(config,session,enrollment,client,{kind:'file',path:file.path,enrollment:enrollment.id,name:resource.lesson!.title+' · '+file.name,lesson:resource.lesson,lessonKey});
+      }
+      const {path,...lesson}=resource.lesson!;return await finish(resourceJSON({lesson,files}));
     }
     const kinds:Record<string,string>={'report-cards':'reportCardMatricula',evaluation:'evaluationMatricula',course:'curso',boletos:'boletoPrint',contract:'contratoPrint','contract-review':'revisarContrato'};
     const path=enrollment.links[kinds[kind]];
@@ -311,7 +324,7 @@ export async function readResource(owner:string,segments:string[]):Promise<Respo
     const html=await decodeHtml(response);
     if(kind==='course'){
       const lessons=parseLessons(html,config.origin,enrollment.id),result=[];
-      for(const lesson of lessons){await registerResource(session,{type:'lesson',enrollment:enrollment.id,path:lesson.path,name:lesson.title,lesson});const {path,...data}=lesson;result.push({...data,url:'/api/myid/enrollments/'+enrollment.id+'/lessons/'+lesson.id});}
+      for(const lesson of lessons){await upsertLesson(session.accountKey,enrollment,{kind:'lesson',path:lesson.path,enrollment:enrollment.id,lesson,lessonKey:'legacy-lesson-'+enrollment.id+'-'+lesson.id});await registerResource(session,{type:'lesson',enrollment:enrollment.id,path:lesson.path,name:lesson.title,lesson});const {path,...data}=lesson;result.push({...data,url:'/api/myid/enrollments/'+enrollment.id+'/lessons/'+lesson.id});}
       return await finish(resourceJSON({enrollment:enrollmentView(enrollment),lessons:result}));
     }
     if(kind==='report-cards'){

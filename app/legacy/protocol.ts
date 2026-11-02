@@ -5,8 +5,8 @@ export class LegacyError extends Error {
 }
 // Published by the institution's own homepage (Divi et_link_options_data).
 export const LOGIN_ENTRY_PATH='/login/auth';
-export type Enrollment = { id: string; registration: string; title: string; level: string; teacher: string; status: string; links: Record<string, string> };
-export type Lesson = { id: string; title: string; unit: string; sequence: number; path: string };
+export type Enrollment = { id: string; registration: string; title: string; level: string; teacher: string; status: string; language?:string;schedule?:{raw:string;time:string;daysCode?:string};links: Record<string, string> };
+export type Lesson = { id: string; title: string; unit: string; sequence: number; lessonNumber?:number;sourceLabel?:string;sourceUnit?:string;path: string };
 export type Report = { number: number; available: boolean; scores: { label: string; value: number }[]; officialGrade: number | null; comment: string; printPath?: string };
 export const clean = (s: string | null | undefined) => (s || '').replace(/\s+/g, ' ').trim();
 const fold = (s: string) => clean(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/:$/, '');
@@ -60,10 +60,14 @@ export function loginForm(html: string, origin: string) {
 }
 
 function field(root: Element, label: string) {
+  for(const row of root.querySelectorAll('.mdl-list__item')){
+    if(fold(row.querySelector('.mdl-list__item-primary-content')?.textContent||'')===fold(label))return clean(row.querySelector('.mdl-list__item-secondary-action')?.textContent);
+  }
   const match = Array.from(root.querySelectorAll('td,dt,label,span,div')).find(el => fold(el.textContent || '') === fold(label));
   return clean(match?.nextElementSibling?.textContent);
 }
 function containerFor(node: Element, id: string) {
+  const mdl=node.closest('.mdl-card');if(mdl)return mdl;
   let current: Element | null = node.parentElement;
   while (current) {
     const registrations = clean(current.textContent).match(/\d{4}\.\d\.\d{4,}/g) || [];
@@ -72,6 +76,13 @@ function containerFor(node: Element, id: string) {
   }
   return node.closest(selectors) || node.parentElement!;
 }
+// Both title nodes and list rows are confirmed in authenticated MDL responses.
+function mdlTitle(root:Element){return clean(Array.from(root.children).find(el=>el.classList.contains('mdl-card__title')&&!el.classList.contains('caixa-texto'))?.querySelector('.mdl-card__title-text')?.textContent);}
+export function parseSchedule(title:string){
+ const match=title.match(/(?:([A-Za-zÀ-ÿ]{1,3}(?:\s*\/\s*[A-Za-zÀ-ÿ]{1,3})+)\s*)?\(((?:[01]?\d|2[0-3]):[0-5]\d)\)/);
+ if(!match)return undefined;
+ return {raw:match[0].trim(),time:match[2].padStart(5,'0'),...(match[1]?{daysCode:match[1].trim()}: {})};
+}
 export function parseProfile(html: string, origin: string) {
   if (isLogin(html)) throw new LegacyError('SESSION_EXPIRED', 'Sua sessão no MyID expirou. Conecte novamente.', 401);
   const root = doc(html), links = localLinks(root, origin), enrollments = new Map<string, Enrollment>();
@@ -79,7 +90,8 @@ export function parseProfile(html: string, origin: string) {
     const match = link.path.match(/^\/(?:perfil\/(curso|reportCardMatricula|evaluationMatricula)|matricula\/(boletoPrint|contratoPrint|revisarContrato))\/(\d+)$/);
     if (!match) continue;
     const kind = match[1] || match[2], id = match[3], container = containerFor(link.node, id);
-    const item = enrollments.get(id) || { id, registration: clean(container.textContent).match(/\d{4}\.\d\.\d{4,}/)?.[0] || '', title: clean(container.querySelector('.card-title,h2,h3,h4')?.textContent), level: field(container, 'Nível'), teacher: field(container, 'Professor'), status: field(container, 'Situação da Matrícula'), links: {} };
+    const title=mdlTitle(container)||clean(container.querySelector('.card-title,h2,h3,h4')?.textContent);
+    const item = enrollments.get(id) || { id, registration:field(container,'Matrícula')||clean(container.textContent).match(/\d{4}\.\d\.\d{4,}/)?.[0] || '', title, level: field(container, 'Nível'), teacher: field(container, 'Professor'), status: field(container, 'Situação da Matrícula'),language:clean(container.querySelector('.caixa-texto .mdl-card__title-text')?.textContent),schedule:parseSchedule(title),links: {} };
     item.links[kind] = link.path; enrollments.set(id, item);
   }
   if (!enrollments.size) throw new LegacyError('PROFILE_FORMAT', 'Não foi possível identificar as matrículas nessa resposta. Nenhum dado foi substituído.');
@@ -109,10 +121,11 @@ export function parseLessons(html: string, origin: string, enrollmentId: string)
   const seen = new Set<string>();
   return links.filter(l => { if (seen.has(l.path)) return false; seen.add(l.path); return true; }).map((l, i) => {
     const id = new URL(l.path, origin).searchParams.get('aula')!;
-    const row = l.node.closest('tr,article,.collection-item,.card,.panel');
-    const title = l.title && !/^(?:ver|visualizar|abrir|acessar)(?: aula)?$/i.test(l.title) ? l.title : clean(row?.textContent).replace(/\b(?:Visualizar|Abrir|Acessar)\b/gi, '').trim();
+    const row = l.node.closest('.mdl-card,tr,article,.collection-item,.card,.panel');
+    const title = row&&mdlTitle(row)|| (l.title && !/^(?:ver|visualizar|abrir|acessar)(?: aula)?$/i.test(l.title) ? l.title : clean(row?.textContent).replace(/\b(?:Visualizar|Abrir|Acessar)\b/gi, '').trim());
     if (!title) throw new LegacyError('LESSON_FORMAT', 'Uma aula foi encontrada sem título. Confira o formato da página antes de importar.');
-    return { id, title: title.slice(0, 200), unit: title.match(/(?:unit|unidade)\s*[\dA-Z]+/i)?.[0] || '', sequence: i + 1, path: l.path };
+    const sourceLabel=clean(row?.querySelector('.caixa-texto .mdl-card__title-text')?.textContent),sourceUnit=sourceLabel.match(/(?:unit|unidade)\s*[\dA-Z]+/i)?.[0]||'',lessonNumber=sourceLabel.match(/aula\s*(\d+)/i)?.[1];
+    return { id, title: title.slice(0, 200), unit: title.match(/(?:unit|unidade)\s*[\dA-Z]+/i)?.[0] || sourceUnit, sequence: i + 1, ...(sourceLabel?{sourceLabel,sourceUnit}:{}),...(lessonNumber!==undefined?{lessonNumber:Number(lessonNumber)}:{}),path: l.path };
   });
 }
 export function parseFiles(html: string, origin: string) {
