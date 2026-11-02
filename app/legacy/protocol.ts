@@ -208,6 +208,7 @@ export function parseReadOnlyDocument(html: string, origin: string) {
 export type CookieJar = Record<string, string>;
 export class LegacyClient {
   lastPath='';
+  trace:{method:string;path:string;status:number;location?:string}[]=[];
   private endpoint:string;
   constructor(public origin: string, public jar: CookieJar = {}, private transport: typeof fetch = fetch,transportOrigin?:string,allowInsecureHttp=false) {
     const url = new URL(origin);
@@ -229,12 +230,12 @@ export class LegacyClient {
     }
     if (Object.keys(this.jar).length > 20) throw new LegacyError('COOKIE_LIMIT', 'O portal retornou uma sessão incompatível.');
   }
-  async request(path: string, options: { method?: 'GET' | 'POST'; body?: URLSearchParams|FormData; login?: boolean; logout?: boolean;photoUpdate?:boolean;recovery?:boolean;referer?:string } = {}) {
+  async request(path: string, options: { method?: 'GET' | 'POST'|'HEAD'|'OPTIONS'; body?: URLSearchParams|FormData; login?: boolean; logout?: boolean;photoUpdate?:boolean;observe?:boolean;recovery?:boolean;referer?:string } = {}) {
     let target = path, method = options.method || 'GET', body = options.body;
     for (let i = 0; i < 5; i++) {
       const safe = safePath(target, this.origin), loginPath = options.login && /^(?:\/|\/login\/[\w-]+)$/.test(target);
       const recoveryPath=options.recovery&&/^\/(?:redefinirSenha(?:\/create)?|login\/auth)(?:\?[^#]*)?$/.test(target);
-      if (!safe && !loginPath && !recoveryPath && !(options.photoUpdate&&target==='/perfil/update'&&method==='POST') && !(options.logout&&target==='/logout/index'&&method==='GET')) throw new LegacyError('PATH_BLOCKED', 'O portal indicou um endereço fora do escopo da integração.');
+      if (!safe && !loginPath && !recoveryPath && !(options.photoUpdate&&target==='/perfil/update'&&['POST','HEAD','OPTIONS'].includes(method)) && !(options.logout&&target==='/logout/index'&&method==='GET')) throw new LegacyError('PATH_BLOCKED', 'O portal indicou um endereço fora do escopo da integração.');
       const headers: Record<string, string> = { Accept: 'text/html,application/pdf;q=0.9' };
       const cookie = Object.entries(this.jar).map(([k,v]) => k + '=' + v).join('; '); if (cookie) headers.Cookie = cookie;
       if (body) { if(body instanceof URLSearchParams)headers['Content-Type'] = 'application/x-www-form-urlencoded'; headers.Origin = this.origin; headers.Referer = this.origin + (options.referer||LOGIN_ENTRY_PATH); }
@@ -242,6 +243,9 @@ export class LegacyClient {
       try { response = await this.transport(this.endpoint + target, { method, body: body instanceof URLSearchParams?body.toString():body, headers, redirect: 'manual', signal: AbortSignal.timeout(15000) }); }
       catch { throw new LegacyError('UPSTREAM_UNAVAILABLE', 'Não foi possível conectar ao MyID original. Tente novamente mais tarde.'); }
       this.cookies(response);
+      const tracePath=(raw:string)=>new URL(raw,this.origin).pathname.replace(/;jsessionid=[^/;?]*/gi,';jsessionid=[redacted]');
+      this.trace.push({method,path:tracePath(target),status:response.status,...(response.headers.get('location')?{location:tracePath(response.headers.get('location')!)}:{})});
+      if(options.observe&&options.photoUpdate&&['HEAD','OPTIONS'].includes(method))return response;
       if ([301,302,303,307,308].includes(response.status)) {
         await response.body?.cancel();
         const location = response.headers.get('location'); if (!location) throw new LegacyError('REDIRECT_INVALID', 'O portal retornou um redirecionamento inválido.');

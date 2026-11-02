@@ -83,12 +83,12 @@ export async function uploadOriginalAvatar(owner:string,file:File){
  finally{await release(owner);}
 }
 export async function inspectAcademic(owner:string,kind:string,enrollmentId?:string,lessonId?:string){
- if(!['profile','edit','course','lesson'].includes(kind))throw new LegacyError('INSPECTION_INVALID','Inspeção inválida.',400);
+ if(!['profile','edit','photo','course','lesson'].includes(kind))throw new LegacyError('INSPECTION_INVALID','Inspeção inválida.',400);
  await load(owner);await lease(owner);
  try{
   const {config,session}=await load(owner),client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin,config.allowHttp);
   let path=session.profilePath;
-  if(kind==='edit'){
+  if(kind==='edit'||kind==='photo'){
    const profile=await client.html(session.profilePath);const edit=findProfileEditPath(profile,config.origin,session.profilePath);if(!edit)throw new LegacyError('PROFILE_FIELDS_NOT_FOUND','O perfil não disponibilizou edição.',404);path=edit;
   }else if(kind!=='profile'){
    const enrollment=session.enrollments.find(e=>e.id===enrollmentId);
@@ -100,9 +100,10 @@ export async function inspectAcademic(owner:string,kind:string,enrollmentId?:str
    }
   }
   const html=await client.html(path),evidence=inspectAcademicHTML(html,config.origin);
-  const photoContract=kind==='edit'?{action:'/perfil/update',method:'POST',enctype:'multipart/form-data',fields:profilePhotoForm(html,config.origin,session.profilePath).map(f=>f.name).concat('imagemUpload'),profileValidated:true}:undefined;
+  const photoContract=['edit','photo'].includes(kind)?{action:'/perfil/update',method:'POST',enctype:'multipart/form-data',fields:profilePhotoForm(html,config.origin,session.profilePath).map(f=>f.name).concat('imagemUpload'),profileValidated:true}:undefined;
+  const probes=[];if(kind==='photo')for(const method of ['HEAD','OPTIONS'] as const){const response=await client.request('/perfil/update',{method,photoUpdate:true,observe:true});probes.push({method,status:response.status,allow:response.headers.get('allow'),location:response.headers.get('location')?.split('?')[0]});await response.body?.cancel();}
   session.jar=client.jar;await store(owner,session);
-  return {kind,path,...evidence,photoContract,checkedAt:now()};
+  return {kind,path,...evidence,photoContract,probes,trace:kind==='photo'?client.trace:undefined,checkedAt:now()};
  }catch(error){if(error instanceof LegacyError&&error.code==='SESSION_EXPIRED')await env.DB!.prepare('UPDATE myid_legacy_session SET expires_at=0 WHERE owner_id=?').bind(owner).run();throw error;}
  finally{await release(owner);}
 }
