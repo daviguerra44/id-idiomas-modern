@@ -24,6 +24,7 @@ export async function POST(request:Request){
       return json(await connect(access.ownerId,payload.username.trim(),payload.password));
     }
     if(payload.action==='start')return json(await start(access.ownerId));
+    if(payload.action==='ensure')return json(await start(access.ownerId,true));
     if(payload.action==='step')return json(await step(access.ownerId));
     if(payload.action==='disconnect')return json(await disconnect(access.ownerId));
     return json({error:'Ação inválida.'},400);

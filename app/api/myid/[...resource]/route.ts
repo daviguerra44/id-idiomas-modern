@@ -9,7 +9,14 @@ export async function GET(request:Request,{params}:{params:Promise<{resource:str
   if(request.headers.get('sec-fetch-site')==='cross-site'&&request.headers.get('sec-fetch-mode')!=='navigate')return failure('Origem inválida.',403);
   const {resource}=await params;
   if(!Array.isArray(resource)||resource.length>4||resource.some(s=>!s||s.length>120||!/^[\w-]+$/.test(s))||new URL(request.url).search)return failure('Consulta inválida.',400);
-  try{return await readResource(access.ownerId,resource);}catch(error){
+  try{
+    for(let attempt=0;;attempt++){
+      try{return await readResource(access.ownerId,resource);}catch(error){
+        if(error instanceof LegacyError&&error.code==='SYNC_BUSY'&&attempt<8){await new Promise(resolve=>setTimeout(resolve,200+attempt*75));continue;}
+        throw error;
+      }
+    }
+  }catch(error){
     if(error instanceof LegacyError)return failure(error.message,error.status,error.code);
     return failure('Não foi possível consultar o MyID original.',500,'INTEGRATION_ERROR');
   }

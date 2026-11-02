@@ -7,9 +7,13 @@ import {inspectAcademicHTML} from './inspection';
 
 type Job = { kind: 'course' | 'lesson' | 'file' | 'report' | 'evaluation' | 'boleto' | 'contract' | 'print' | 'review' | 'profile-edit'; path: string; enrollment: string; lesson?: Lesson; name?: string; lessonKey?: string; documentKind?:string };
 type Resource = {id:string;enrollment:string;type:'lesson'|'document'|'pdf';path:string;name:string;lesson?:Lesson};
-type Session = { resources?:Resource[];accountKey:string;jar: CookieJar; profilePath: string;profileEditPath?:string; enrollments: Enrollment[]; queue: Job[]; completed: number; total: number; imported: number; warnings: string[]; startedAt: string; finishedAt?: string };
+type Session = { autoVersion?:number;reused?:number;resources?:Resource[];accountKey:string;jar: CookieJar; profilePath: string;profileEditPath?:string; enrollments: Enrollment[]; queue: Job[]; completed: number; total: number; imported: number; warnings: string[]; startedAt: string; finishedAt?: string };
 type Row = { sealed: string; expires_at: number; failures: number; retry_at: number };
 const now = () => new Date().toISOString();
+const AUTO_VERSION=3,REFRESH_MS=6*60*60*1000;
+const priority:Record<Job['kind'],number>={course:0,report:1,lesson:2,'profile-edit':3,evaluation:4,boleto:4,contract:4,review:4,print:5,file:6};
+const sortJobs=(session:Session)=>session.queue.sort((a,b)=>priority[a.kind]-priority[b.kind]);
+async function finishImport(session:Session){session.finishedAt=now();await updateAcademic(session.accountKey,s=>{s.connection??={};s.connection.lastFullSyncAt=session.finishedAt;s.connection.catalogVersion=AUTO_VERSION;});}
 
 export function connectionStatus() {
   if (!env.MYID_ORIGIN || !validKey(env.MYID_SESSION_KEY)) return { configured: false, code:'CONFIGURATION_MISSING',reason: 'MYID_ORIGIN ou a chave de sessão não está configurada no ambiente de produção.' };
@@ -76,7 +80,7 @@ export async function status(owner: string) {
   if(!session.accountKey?.startsWith(owner+'|profile:'))return {...config,connected:false};
   return { ...config, connected: true, ...progress(session) };
 }
-function progress(s: Session) { return { completed: s.completed, total: s.total, pending: s.queue.length, imported: s.imported, warnings: s.warnings.slice(-15), finishedAt: s.finishedAt || null, startedAt: s.startedAt }; }
+function progress(s: Session) { return { completed: s.completed, total: s.total, pending: s.queue.length, imported: s.imported,reused:s.reused||0, warnings: s.warnings.slice(-15), finishedAt: s.finishedAt || null, startedAt: s.startedAt }; }
 async function lease(owner: string) {
   const config = configuration();
   const result = await config.db.prepare('UPDATE myid_legacy_session SET locked_until=? WHERE owner_id=? AND locked_until<?').bind(Date.now()+90000,owner,Date.now()).run();
@@ -117,6 +121,8 @@ async function updateAcademic(owner: string, fn: (state: any) => void) {
 function courseId(s: any, enrollment: Enrollment) { return s.courses.find((c:any)=>c.legacyEnrollmentId===enrollment.id || enrollment.registration && c.enrollment===enrollment.registration)?.id || 'legacy-course-'+enrollment.id; }
 function mergeProfile(s: any, profile: ReturnType<typeof parseProfile>) {
   const permitted=new Set(profile.enrollments.map(e=>e.id));
+  const previous=new Set(s.courses.filter((c:any)=>c.source==='myid').map((c:any)=>c.legacyEnrollmentId));
+  const enrollmentsChanged=previous.size!==permitted.size||[...permitted].some(id=>!previous.has(id));
   s.courses=s.courses.filter((c:any)=>c.source==='myid'&&permitted.has(c.legacyEnrollmentId));
   const courseIds=new Set(s.courses.map((c:any)=>c.id));
   s.materials=s.materials.filter((m:any)=>courseIds.has(m.courseId));
@@ -126,7 +132,8 @@ function mergeProfile(s: any, profile: ReturnType<typeof parseProfile>) {
   s.notebooks=Object.fromEntries(Object.entries(s.notebooks).filter(([id])=>materialIds.has(id)));
   s.tasks=s.tasks.filter((t:any)=>!t.courseId||courseIds.has(t.courseId));s.attendance=s.attendance.filter((a:any)=>courseIds.has(a.courseId));
   if (profile.name) s.profile.name=profile.name;
-  s.connection={status:'connected',syncedAt:now(),profileParserVersion:2};
+  s.connection={...s.connection,status:'connected',syncedAt:now(),profileParserVersion:2};
+  if(enrollmentsChanged)s.connection.catalogVersion=0;
   for (const enrollment of profile.enrollments) {
     const id=courseId(s,enrollment), teacherId='legacy-teacher-'+enrollment.id;
     if (enrollment.teacher) { const t=s.teachers.find((t:any)=>t.id===teacherId); if(t)t.name=enrollment.teacher;else s.teachers.push({id:teacherId,name:enrollment.teacher,email:'',specialty:'Idiomas'}); }
@@ -142,18 +149,24 @@ function mergeProfile(s: any, profile: ReturnType<typeof parseProfile>) {
   }
   if(!s.courses.some((c:any)=>c.id===s.settings.defaultCourse))s.settings.defaultCourse=s.courses[0]?.id||'';
 }
-export async function start(owner: string) {
+export async function start(owner: string,automatic=false) {
   await lease(owner);
   try {
     const {config,session}=await load(owner), client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin,config.allowHttp);
+    if(automatic){
+      if(session.autoVersion===AUTO_VERSION&&session.queue.length)return progress(session);
+      const cached=await config.db.prepare('SELECT document,revision FROM myedi_state WHERE owner_id=?').bind(session.accountKey).first<{document:string;revision:number}>();
+      const connection=cached?JSON.parse(cached.document).connection:null;
+      if(connection?.catalogVersion===AUTO_VERSION&&Date.now()-Date.parse(connection.lastFullSyncAt||'')<REFRESH_MS){session.queue=[];session.autoVersion=AUTO_VERSION;session.finishedAt=connection.lastFullSyncAt;await store(owner,session);return progress(session);}
+    }
     const profileHTML=await client.html(session.profilePath),profile=parseProfile(profileHTML,config.origin);
-    session.enrollments=profile.enrollments;session.jar=client.jar;session.queue=[];session.completed=0;session.total=0;session.imported=0;session.warnings=[];session.startedAt=now();delete session.finishedAt;
+    session.enrollments=profile.enrollments;session.jar=client.jar;session.queue=[];session.completed=0;session.total=0;session.imported=0;session.reused=0;session.autoVersion=AUTO_VERSION;session.warnings=[];session.startedAt=now();delete session.finishedAt;
     session.profileEditPath=findProfileEditPath(profileHTML,config.origin,session.profilePath);
     if(session.profileEditPath)session.queue.push({kind:'profile-edit',path:session.profileEditPath,enrollment:''});
     for (const e of profile.enrollments) for (const [kind,key] of [['course','curso'],['report','reportCardMatricula'],['evaluation','evaluationMatricula'],['boleto','boletoPrint'],['contract','contratoPrint'],['review','revisarContrato']] as const) {
       if(e.links[key])session.queue.push({kind,path:e.links[key],enrollment:e.id});
     }
-    session.total=session.queue.length;
+    sortJobs(session);session.total=session.queue.length;
     await updateAcademic(session.accountKey,s=>mergeProfile(s,profile));await store(owner,session);
     return progress(session);
   } catch(error){
@@ -161,7 +174,7 @@ export async function start(owner: string) {
     throw error;
   } finally { await release(owner); }
 }
-function enqueue(session:Session,jobs:Job[]) { if(session.total+jobs.length>5000)throw new LegacyError('JOB_LIMIT','O curso excede o limite de itens por sincronização.');session.queue.push(...jobs);session.total+=jobs.length; }
+function enqueue(session:Session,jobs:Job[]) { if(session.total+jobs.length>5000)throw new LegacyError('JOB_LIMIT','O curso excede o limite de itens por sincronização.');session.queue.push(...jobs);sortJobs(session);session.total+=jobs.length; }
 export async function step(owner: string) {
   await lease(owner);
   try {
@@ -170,7 +183,7 @@ export async function step(owner: string) {
       if(job.path!==session.profileEditPath)throw new LegacyError('PROFILE_FORBIDDEN','O perfil não pertence à sessão conectada.',403);
       const client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin,config.allowHttp);
       try{const fields=parseProfileFields(await client.html(job.path));await updateAcademic(session.accountKey,s=>s.profile.fields=fields);}catch(error){if(error instanceof LegacyError&&error.code==='SESSION_EXPIRED')await config.db.prepare('UPDATE myid_legacy_session SET expires_at=0 WHERE owner_id=?').bind(owner).run();if(!(error instanceof LegacyError)||['SESSION_EXPIRED','RATE_LIMIT','UPSTREAM_UNAVAILABLE','STATE_CONFLICT'].includes(error.code))throw error;session.warnings.push(error.message);}
-      session.jar=client.jar;session.queue.shift();session.completed++;if(!session.queue.length)session.finishedAt=now();await store(owner,session);return progress(session);
+      session.jar=client.jar;session.queue.shift();session.completed++;if(!session.queue.length)await finishImport(session);await store(owner,session);return progress(session);
     }
     const enrollment=session.enrollments.find(e=>e.id===job.enrollment);
     if(!enrollment)throw new LegacyError('ENROLLMENT_FORBIDDEN','A matrícula não pertence à sessão conectada.',403);
@@ -191,10 +204,12 @@ export async function step(owner: string) {
           const html=await decodeHtml(response);
           if(job.kind==='course'){
             const lessons=parseLessons(html,config.origin,enrollment.id);if(!lessons.length)throw new LegacyError('LESSONS_NOT_FOUND','Nenhuma aula foi identificada no curso '+(enrollment.registration||enrollment.id)+'. Os materiais existentes foram mantidos.');
+            await updateAcademic(session.accountKey,s=>{for(const l of lessons)mergeLesson(s,enrollment,{kind:'lesson',path:l.path,enrollment:enrollment.id,lesson:l,lessonKey:'legacy-lesson-'+enrollment.id+'-'+l.id});});
             enqueue(session,lessons.map(l=>({kind:'lesson',path:l.path,enrollment:enrollment.id,lesson:l,lessonKey:'legacy-lesson-'+enrollment.id+'-'+l.id})));
           }else if(job.kind==='lesson'){
             const files=parseFiles(html,config.origin);if(!files.length)throw new LegacyError('FILES_NOT_FOUND','Nenhum PDF foi identificado na aula '+job.lesson!.title+'.');
             await upsertLesson(session.accountKey,enrollment,job);
+            for(const file of files){const linked=await registerResource(session,{type:'pdf',enrollment:enrollment.id,path:file.path,name:file.name});const id=await stableId(session.accountKey+'|'+file.path);await saveFileRecord(session,enrollment,{...job,kind:'file',path:file.path,name:lessonFileTitle(job.lesson!,file)},id,linked.url,true);}
             enqueue(session,files.map(f=>({...job,kind:'file',path:f.path,name:lessonFileTitle(job.lesson!,f)})));
           }else if(job.kind==='report'){
             const reports=parseReports(html,config.origin);
@@ -214,22 +229,31 @@ export async function step(owner: string) {
       if(!(error instanceof LegacyError)||['SESSION_EXPIRED','RATE_LIMIT','UPSTREAM_UNAVAILABLE','STATE_CONFLICT'].includes(error.code))throw error;
       session.warnings.push(error.message);if(session.warnings.length>100)session.warnings.shift();
     }
-    session.jar=client.jar;session.queue.shift();session.completed++;if(!session.queue.length)session.finishedAt=now();await store(owner,session);
+    session.jar=client.jar;session.queue.shift();session.completed++;if(!session.queue.length)await finishImport(session);await store(owner,session);
     return progress(session);
   }finally{await release(owner);}
 }
+async function saveFileRecord(session:Session,enrollment:Enrollment,job:Job,id:string,url:string,pendingDownload=false){
+ await updateAcademic(session.accountKey,s=>{
+  const cId=courseId(s,enrollment),materialId='legacy-pdf-'+id+'-'+(job.lessonKey||enrollment.id+'-'+(job.documentKind||'document'));
+  const material={id:materialId,courseId:cId,lessonId:job.lessonKey||'',title:job.name||'Material da aula',type:'pdf',url,section:job.lesson?.title||'Documentos',category:job.lessonKey?'course':'document',source:'myid',syncedAt:now(),archived:false,pendingDownload};
+  const old=s.materials.find((m:any)=>m.id===materialId);
+  if(old){if(!pendingDownload||old.pendingDownload)Object.assign(old,material);}else s.materials.push(material);
+  if(job.lessonKey){const lesson=s.lessons.find((l:any)=>l.id===job.lessonKey);if(lesson&&!lesson.materialIds.includes(materialId))lesson.materialIds.push(materialId);}
+  if(job.documentKind){const c=s.courses.find((c:any)=>c.id===cId);if(c){c.documents??={};const document=c.documents[job.documentKind]??={blocks:[],materialIds:[]};document.materialIds??=[];if(!document.materialIds.includes(materialId))document.materialIds.push(materialId);document.syncedAt=now();}}
+ });
+}
 async function importFile(config:ReturnType<typeof configuration>,session:Session,enrollment:Enrollment,client:LegacyClient,job:Job){
-        const response=await client.request(job.path);if((response.headers.get('content-type')||'').includes('text/html')){parseFiles(await decodeHtml(response),config.origin);throw new LegacyError('PDF_EXPECTED','O anexo não retornou um PDF.');}const bytes=await boundedBody(response,20*1024*1024);
-        if(new TextDecoder().decode(bytes.slice(0,5))!=='%PDF-')throw new LegacyError('PDF_EXPECTED','Um anexo não é PDF e não foi importado.');
-        const id=await stableId(session.accountKey+'|'+job.path), baseName=(job.name||'Material.pdf').replace(/[\r\n"\\]/g,'_').slice(0,120),name=/\.pdf$/i.test(baseName)?baseName:baseName+'.pdf';
-        await config.bucket.put(session.accountKey+'/'+id,bytes,{httpMetadata:{contentType:'application/pdf'},customMetadata:{name}});
-        await updateAcademic(session.accountKey,s=>{
-          const cId=courseId(s,enrollment), materialId='legacy-pdf-'+id+'-'+(job.lessonKey||enrollment.id+'-'+(job.documentKind||'document'));
-          const material={id:materialId,courseId:cId,lessonId:job.lessonKey||'',title:job.name||'Material da aula',type:'pdf',url:'/api/myedi/files/'+id,section:job.lesson?.title||'Documentos',category:job.lessonKey?'course':'document',source:'myid',syncedAt:now(),archived:false};
-          const old=s.materials.find((m:any)=>m.id===materialId);if(old)Object.assign(old,material);else s.materials.push(material);
-          if(job.lessonKey){const lesson=s.lessons.find((l:any)=>l.id===job.lessonKey);if(lesson&&!lesson.materialIds.includes(materialId))lesson.materialIds.push(materialId);}
-          if(job.documentKind){const c=s.courses.find((c:any)=>c.id===cId);if(c){c.documents??={};const document=c.documents[job.documentKind]??={blocks:[],materialIds:[]};document.materialIds??=[];if(!document.materialIds.includes(materialId))document.materialIds.push(materialId);document.syncedAt=now();}}
-        });session.imported++;return {url:'/api/myedi/files/'+id,title:job.name||'Material da aula'};
+ const id=await stableId(session.accountKey+'|'+job.path),key=session.accountKey+'/'+id;
+ const existing=await config.bucket.head?.(key);
+ if(!existing){
+  const response=await client.request(job.path);if((response.headers.get('content-type')||'').includes('text/html')){parseFiles(await decodeHtml(response),config.origin);throw new LegacyError('PDF_EXPECTED','O anexo não retornou um PDF.');}
+  const bytes=await boundedBody(response,20*1024*1024);if(new TextDecoder().decode(bytes.slice(0,5))!=='%PDF-')throw new LegacyError('PDF_EXPECTED','Um anexo não é PDF e não foi importado.');
+  const baseName=(job.name||'Material.pdf').replace(/[\r\n"\\]/g,'_').slice(0,120),name=/\.pdf$/i.test(baseName)?baseName:baseName+'.pdf';
+  await config.bucket.put(key,bytes,{httpMetadata:{contentType:'application/pdf'},customMetadata:{name}});
+ }else session.reused=(session.reused||0)+1;
+ await saveFileRecord(session,enrollment,job,id,'/api/myedi/files/'+id);
+ session.imported++;return {url:'/api/myedi/files/'+id,title:job.name||'Material da aula'};
 }
 function mergeLesson(s:any,enrollment:Enrollment,job:Job){
  const lesson=job.lesson!;const item={id:job.lessonKey,courseId:courseId(s,enrollment),title:lesson.title,unit:lesson.unit,sequence:lesson.sequence,lessonNumber:lesson.lessonNumber,sourceLabel:lesson.sourceLabel,sourceUnit:lesson.sourceUnit,date:'',description:'',materialIds:[],source:'myid',syncedAt:now(),archived:false};
