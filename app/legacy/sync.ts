@@ -33,12 +33,14 @@ export async function inspectConnection(){
   return {...connectionStatus(),reachable:true,contract,checkedAt:now()};
 }
 export async function inspectAcademic(owner:string,kind:string,enrollmentId?:string,lessonId?:string){
- if(!['profile','course','lesson'].includes(kind))throw new LegacyError('INSPECTION_INVALID','Inspeção inválida.',400);
+ if(!['profile','edit','course','lesson'].includes(kind))throw new LegacyError('INSPECTION_INVALID','Inspeção inválida.',400);
  await load(owner);await lease(owner);
  try{
   const {config,session}=await load(owner),client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin,config.allowHttp);
   let path=session.profilePath;
-  if(kind!=='profile'){
+  if(kind==='edit'){
+   const profile=await client.html(session.profilePath);const edit=findProfileEditPath(profile,config.origin,session.profilePath);if(!edit)throw new LegacyError('PROFILE_FIELDS_NOT_FOUND','O perfil não disponibilizou edição.',404);path=edit;
+  }else if(kind!=='profile'){
    const enrollment=session.enrollments.find(e=>e.id===enrollmentId);
    if(!enrollment?.links.curso)throw new LegacyError('ENROLLMENT_FORBIDDEN','O curso não está vinculado à sua sessão.',403);
    path=enrollment.links.curso;
