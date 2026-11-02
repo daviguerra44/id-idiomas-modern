@@ -1,10 +1,10 @@
 // Verifies parsers against supplied authenticated HTML captures, never fixtures
 // generated here. Capture files stay local; this script does not perform login.
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),ts=require('typescript'),{parseHTML}=require('linkedom');
-const [profileFile,courseFile,enrollmentId,lessonFile]=process.argv.slice(2);
+const [profileFile,courseFile,enrollmentId,lessonFile,captureOrigin]=process.argv.slice(2);
 if(!profileFile||!courseFile||!enrollmentId)throw Error('Use: node scripts/check-myid-observed.cjs perfil.html curso.html matriculaId [aula.html]');
 const protocol={};vm.runInNewContext(ts.transpileModule(fs.readFileSync('app/legacy/protocol.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports:protocol,require,URL,URLSearchParams});
-const origin='http://capture.local',profileHTML=fs.readFileSync(profileFile,'utf8'),courseHTML=fs.readFileSync(courseFile,'utf8');
+const origin=captureOrigin||'http://capture.local',profileHTML=fs.readFileSync(profileFile,'utf8'),courseHTML=fs.readFileSync(courseFile,'utf8');
 const profile=protocol.parseProfile(profileHTML,origin),lessons=protocol.parseLessons(courseHTML,origin,enrollmentId);
 const cards=[...parseHTML(profileHTML).document.querySelectorAll('.mdl-card')].filter(card=>card.textContent.includes('Matrícula')&&card.querySelector('a[href*="Matricula/"],a[href*="boletoPrint/"]'));
 assert.equal(profile.enrollments.length,cards.length,'One independent record per enrollment card');

@@ -16,19 +16,21 @@ const selectors = '[class~="card"], [class~="card-panel"], [class~="panel"], art
 export function safePath(raw: string, origin: string): string | null {
   try {
     const url = new URL(raw, origin);
-    // Legacy absolute HTTP links are resolved as paths, never fetched over HTTP.
+    // Absolute legacy links become scoped paths; transport policy is server-only.
     const canonical=new URL(origin);
     if(url.host===canonical.host&&['http:','https:'].includes(url.protocol)&&!url.username&&!url.password){url.protocol=canonical.protocol;}
     if (url.origin !== origin || url.username || url.password || /%2f|%5c|%2e|\\/i.test(url.pathname)) return null;
     const p = url.pathname;
     const allowed = /^(?:\/perfil(?:\/(?:home|(?:show|edit)\/[a-f\d]+|curso\/\d+|aula\/\d+|reportCardMatricula\/\d+|evaluationMatricula\/\d+))?\/?|\/reportCard\/print\/\d+|\/matricula\/(?:boletoPrint|contratoPrint|revisarContrato)\/\d+|\/storage\/uploads\/Anexo\/[\w-]+\/[^/]+)$/i.test(p);
-    if (!allowed) return null;
+    const attachment=/^\/storage\/uploads\/.+\/[^/]+$/i.test(p)||/\.pdf$/i.test(p);
+    if (!allowed&&!attachment) return null;
     const keys = [...url.searchParams.keys()];
     if (p.includes('/aula/')) {
       if (keys.some(k => k !== 'aula') || !/^[a-f\d-]{8,100}$/i.test(url.searchParams.get('aula') || '') || url.searchParams.getAll('aula').length !== 1) return null;
     } else if (p.startsWith('/reportCard/print/')) {
       if (keys.some(k => k !== 'u') || url.searchParams.getAll('u').length>1 || (url.searchParams.has('u') && (!url.searchParams.get('u') || url.searchParams.get('u')!.length>100 || /[\r\n]/.test(url.searchParams.get('u')!)))) return null;
-    } else if (keys.length) return null;
+    } else if(attachment){if(url.search.length>2000||keys.length>16)return null;}
+    else if (keys.length) return null;
     return p + url.search;
   } catch { return null; }
 }
@@ -132,12 +134,21 @@ export function parseFiles(html: string, origin: string) {
   if (isLogin(html)) throw new LegacyError('SESSION_EXPIRED', 'Sua sessão no MyID expirou. Conecte novamente.', 401);
   const root = doc(html), result = new Map<string, { path: string; name: string }>();
   for (const node of root.querySelectorAll('a[href],iframe[src],object[data],embed[src]')) {
-    const path = safePath(node.getAttribute('href') || node.getAttribute('src') || node.getAttribute('data') || '', origin);
-    if (!path?.startsWith('/storage/uploads/Anexo/')) continue;
+    let raw=node.getAttribute('href')||node.getAttribute('src')||node.getAttribute('data')||'';
+    // Confirmed in live lesson HTML: pdfFrame embeds Google Viewer with the
+    // original authorized PDF in its `url` parameter. Never fetch the viewer.
+    try{const viewer=new URL(raw,origin);if(viewer.protocol==='https:'&&viewer.hostname==='docs.google.com'&&viewer.pathname==='/viewer'&&viewer.searchParams.getAll('url').length===1)raw=viewer.searchParams.get('url')!;}catch{continue;}
+    const path=safePath(raw,origin);
+    if(!path)continue;
+    const pathname=new URL(path,origin).pathname;if(!pathname.startsWith('/storage/uploads/')&&!/\.pdf$/i.test(pathname))continue;
     const name = clean(node.textContent) || decodeURIComponent(path.split('/').at(-1)!);
     result.set(path, { path, name: name.slice(0, 200) });
   }
   return [...result.values()];
+}
+export function lessonFileTitle(lesson:Lesson,file:{name:string}){
+ const name=clean(file.name).replace(/\.pdf$/i,'');
+ return !name||/^[a-f\d-]{20,}$/i.test(name)||fold(name)===fold(lesson.title)?lesson.title:lesson.title+' · '+name;
 }
 
 const labels = ['Avaliação Diária', 'Presença', 'Teste Oral', 'Teste Escrito', 'Habilidades de Comunicação', 'Dever de Casa'];

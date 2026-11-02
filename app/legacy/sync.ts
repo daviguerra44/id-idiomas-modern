@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:workers';
 import {emptyMyIDState} from '../myid-empty';
 import { normalizeMyIDState } from '../myid-state';
-import { boundedBody, decodeHtml, inspectLoginForm, LOGIN_ENTRY_PATH, LegacyClient, LegacyError, parseProfile, findProfileEditPath,parseProfileFields,parseLessons, parseFiles, parseReports, parseReadOnlyDocument, type CookieJar, type Enrollment, type Lesson } from './protocol';
+import { boundedBody, decodeHtml, inspectLoginForm, LOGIN_ENTRY_PATH, LegacyClient, LegacyError, parseProfile, findProfileEditPath,parseProfileFields,parseLessons, parseFiles,lessonFileTitle, parseReports, parseReadOnlyDocument, type CookieJar, type Enrollment, type Lesson } from './protocol';
 import { seal, unseal, stableId, validKey } from './vault';
 import {inspectAcademicHTML} from './inspection';
 
@@ -195,7 +195,7 @@ export async function step(owner: string) {
           }else if(job.kind==='lesson'){
             const files=parseFiles(html,config.origin);if(!files.length)throw new LegacyError('FILES_NOT_FOUND','Nenhum PDF foi identificado na aula '+job.lesson!.title+'.');
             await upsertLesson(session.accountKey,enrollment,job);
-            enqueue(session,files.map(f=>({...job,kind:'file',path:f.path,name:job.lesson!.title+' · '+f.name})));
+            enqueue(session,files.map(f=>({...job,kind:'file',path:f.path,name:lessonFileTitle(job.lesson!,f)})));
           }else if(job.kind==='report'){
             const reports=parseReports(html,config.origin);
             enqueue(session,reports.filter(r=>r.available&&r.printPath).map(r=>({kind:'print',path:r.printPath!,enrollment:enrollment.id,documentKind:'report-print-'+r.number})));
@@ -221,7 +221,7 @@ export async function step(owner: string) {
 async function importFile(config:ReturnType<typeof configuration>,session:Session,enrollment:Enrollment,client:LegacyClient,job:Job){
         const response=await client.request(job.path);if((response.headers.get('content-type')||'').includes('text/html')){parseFiles(await decodeHtml(response),config.origin);throw new LegacyError('PDF_EXPECTED','O anexo não retornou um PDF.');}const bytes=await boundedBody(response,20*1024*1024);
         if(new TextDecoder().decode(bytes.slice(0,5))!=='%PDF-')throw new LegacyError('PDF_EXPECTED','Um anexo não é PDF e não foi importado.');
-        const id=await stableId(session.accountKey+'|'+job.path), name=(job.name||'Material.pdf').replace(/[\r\n"\\]/g,'_').slice(0,120);
+        const id=await stableId(session.accountKey+'|'+job.path), baseName=(job.name||'Material.pdf').replace(/[\r\n"\\]/g,'_').slice(0,120),name=/\.pdf$/i.test(baseName)?baseName:baseName+'.pdf';
         await config.bucket.put(session.accountKey+'/'+id,bytes,{httpMetadata:{contentType:'application/pdf'},customMetadata:{name}});
         await updateAcademic(session.accountKey,s=>{
           const cId=courseId(s,enrollment), materialId='legacy-pdf-'+id+'-'+(job.lessonKey||enrollment.id+'-'+(job.documentKind||'document'));
@@ -229,7 +229,7 @@ async function importFile(config:ReturnType<typeof configuration>,session:Sessio
           const old=s.materials.find((m:any)=>m.id===materialId);if(old)Object.assign(old,material);else s.materials.push(material);
           if(job.lessonKey){const lesson=s.lessons.find((l:any)=>l.id===job.lessonKey);if(lesson&&!lesson.materialIds.includes(materialId))lesson.materialIds.push(materialId);}
           if(job.documentKind){const c=s.courses.find((c:any)=>c.id===cId);if(c){c.documents??={};const document=c.documents[job.documentKind]??={blocks:[],materialIds:[]};document.materialIds??=[];if(!document.materialIds.includes(materialId))document.materialIds.push(materialId);document.syncedAt=now();}}
-        });session.imported++;
+        });session.imported++;return {url:'/api/myedi/files/'+id,title:job.name||'Material da aula'};
 }
 function mergeLesson(s:any,enrollment:Enrollment,job:Job){
  const lesson=job.lesson!;const item={id:job.lessonKey,courseId:courseId(s,enrollment),title:lesson.title,unit:lesson.unit,sequence:lesson.sequence,lessonNumber:lesson.lessonNumber,sourceLabel:lesson.sourceLabel,sourceUnit:lesson.sourceUnit,date:'',description:'',materialIds:[],source:'myid',syncedAt:now(),archived:false};
@@ -312,8 +312,9 @@ export async function readResource(owner:string,segments:string[]):Promise<Respo
       await upsertLesson(session.accountKey,enrollment,{kind:'lesson',path:resource.path,enrollment:enrollment.id,lesson:resource.lesson,lessonKey});
       const files=[];
       for(const file of attachments){
-        files.push(await registerResource(session,{type:'pdf',enrollment:enrollment.id,path:file.path,name:file.name}));
-        await importFile(config,session,enrollment,client,{kind:'file',path:file.path,enrollment:enrollment.id,name:resource.lesson!.title+' · '+file.name,lesson:resource.lesson,lessonKey});
+        const linked=await registerResource(session,{type:'pdf',enrollment:enrollment.id,path:file.path,name:file.name});
+        const cached=await importFile(config,session,enrollment,client,{kind:'file',path:file.path,enrollment:enrollment.id,name:lessonFileTitle(resource.lesson!,file),lesson:resource.lesson,lessonKey});
+        files.push({...linked,cachedUrl:cached.url});
       }
       const {path,...lesson}=resource.lesson!;return await finish(resourceJSON({lesson,files}));
     }
