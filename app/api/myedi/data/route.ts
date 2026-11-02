@@ -13,7 +13,7 @@ export async function GET(){
   if(!account)return json({state:emptyMyIDState(),revision:0,canAdmin:false,canConnect:true,readOnly:false,connected:false});
   if(!env.DB)return json({error:'Banco de dados indisponível.'},503);
   let row=await env.DB.prepare('SELECT document,revision,updated_at FROM myedi_state WHERE owner_id=?').bind(account.accountKey).first<{document:string;revision:number;updated_at:string}>();
-  if(row&&JSON.parse(row.document).connection?.profileParserVersion!==2){
+  if(row&&JSON.parse(row.document).connection?.profileParserVersion!==3){
    try{await readResource(access.ownerId,['profile']);row=await env.DB.prepare('SELECT document,revision,updated_at FROM myedi_state WHERE owner_id=?').bind(account.accountKey).first<{document:string;revision:number;updated_at:string}>();}
    catch(error){if(!(error instanceof LegacyError)||error.code!=='SYNC_BUSY')throw error;}
   }

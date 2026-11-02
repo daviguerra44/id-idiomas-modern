@@ -99,8 +99,28 @@ export function parseProfile(html: string, origin: string) {
   if (!enrollments.size) throw new LegacyError('PROFILE_FORMAT', 'Não foi possível identificar as matrículas nessa resposta. Nenhum dado foi substituído.');
   const profilePath = links.find(l => /^\/perfil\/show\//.test(l.path))?.path;
   const heading = Array.from(root.querySelectorAll('h1,h2,h3,.profile-name')).map(h => clean(h.textContent)).find(t => t && !/^(?:ver perfil|perfil|inglês|espanhol|meu perfil)$/i.test(t));
-  return { name: heading || '', profilePath, enrollments: [...enrollments.values()] };
+  return { name: heading || '', profilePath, photoPath:parseProfilePhoto(html,origin),enrollments: [...enrollments.values()] };
 }
+export function parseProfilePhoto(html:string,origin:string){
+ const root=doc(html),box=root.querySelector('.caixa-foto-perfil'),candidates:string[]=[];
+ if(box){candidates.push(...Array.from(box.querySelectorAll('img[src]')).map(n=>n.getAttribute('src')||''));candidates.push(...Array.from((box.getAttribute('style')||'').matchAll(/url\(\s*["']?([^"')]+)["']?\s*\)/gi),m=>m[1]));}
+ for(const style of root.querySelectorAll('style'))for(const rule of (style.textContent||'').matchAll(/\.caixa-foto-perfil\s*\{([^}]+)\}/gi))for(const url of rule[1].matchAll(/url\(\s*["']?([^"')]+)["']?\s*\)/gi))candidates.push(url[1]);
+ return candidates.map(raw=>safePath(raw,origin)).find(path=>path?.startsWith('/storage/uploads/'))||undefined;
+}
+export function profilePhotoForm(html:string,origin:string,profilePath:string){
+ const root=doc(html),form=Array.from(root.querySelectorAll('form')).find(f=>{try{return new URL(f.getAttribute('action')||'',origin).pathname==='/perfil/update'&&new URL(f.getAttribute('action')||'',origin).origin===origin;}catch{return false;}});
+ if(!form||form.getAttribute('method')?.toLowerCase()!=='post'||form.getAttribute('enctype')?.toLowerCase()!=='multipart/form-data'||!form.querySelector('input[type="file"][name="imagemUpload"]'))throw new LegacyError('PHOTO_FORM_CHANGED','O formulário original de foto mudou.',502);
+ const fields=Array.from(form.querySelectorAll('input[type="hidden"][name]')).map(n=>({name:n.getAttribute('name')!,value:n.getAttribute('value')||''}));
+ if(fields.find(f=>f.name==='id')?.value!==profilePath.split('/').at(-1))throw new LegacyError('PROFILE_FORBIDDEN','O formulário não pertence ao perfil conectado.',403);
+ return fields;
+}
+export function hasPhotoForm(html:string){return !!doc(html).querySelector('input[type="file"][name="imagemUpload"]');}
+export function recoveryForm(html:string,origin:string){
+ const form=Array.from(doc(html).querySelectorAll('form')).find(f=>{try{const url=new URL(f.getAttribute('action')||'',origin);return url.origin===origin&&url.pathname==='/redefinirSenha/create';}catch{return false;}});
+ if(!form||form.getAttribute('method')?.toLowerCase()!=='post'||!form.querySelector('input[name="username"]'))throw new LegacyError('RECOVERY_FORM_CHANGED','O formulário de recuperação mudou.',502);
+ const fields=new URLSearchParams();for(const input of form.querySelectorAll('input[type="hidden"][name]'))fields.append(input.getAttribute('name')!,input.getAttribute('value')||'');return fields;
+}
+export function recoveryMessage(html:string){return clean(doc(html).querySelector('#alert')?.textContent).replace(/^[×\s]*Atenção:\s*/i,'');}
 
 export function findProfilePath(html: string, origin: string) { return localLinks(doc(html), origin).find(l => /^\/perfil\/show\//.test(l.path))?.path; }
 export function findProfileEditPath(html:string,origin:string,profilePath:string){return localLinks(doc(html),origin).find(l=>l.path===profilePath.replace('/show/','/edit/'))?.path;}
@@ -209,16 +229,17 @@ export class LegacyClient {
     }
     if (Object.keys(this.jar).length > 20) throw new LegacyError('COOKIE_LIMIT', 'O portal retornou uma sessão incompatível.');
   }
-  async request(path: string, options: { method?: 'GET' | 'POST'; body?: URLSearchParams; login?: boolean; logout?: boolean } = {}) {
+  async request(path: string, options: { method?: 'GET' | 'POST'; body?: URLSearchParams|FormData; login?: boolean; logout?: boolean;photoUpdate?:boolean;recovery?:boolean;referer?:string } = {}) {
     let target = path, method = options.method || 'GET', body = options.body;
     for (let i = 0; i < 5; i++) {
       const safe = safePath(target, this.origin), loginPath = options.login && /^(?:\/|\/login\/[\w-]+)$/.test(target);
-      if (!safe && !loginPath && !(options.logout&&target==='/logout/index'&&method==='GET')) throw new LegacyError('PATH_BLOCKED', 'O portal indicou um endereço fora do escopo da integração.');
+      const recoveryPath=options.recovery&&/^\/(?:redefinirSenha(?:\/create)?|login\/auth)(?:\?[^#]*)?$/.test(target);
+      if (!safe && !loginPath && !recoveryPath && !(options.photoUpdate&&target==='/perfil/update'&&method==='POST') && !(options.logout&&target==='/logout/index'&&method==='GET')) throw new LegacyError('PATH_BLOCKED', 'O portal indicou um endereço fora do escopo da integração.');
       const headers: Record<string, string> = { Accept: 'text/html,application/pdf;q=0.9' };
       const cookie = Object.entries(this.jar).map(([k,v]) => k + '=' + v).join('; '); if (cookie) headers.Cookie = cookie;
-      if (body) { headers['Content-Type'] = 'application/x-www-form-urlencoded'; headers.Origin = this.origin; headers.Referer = this.origin + LOGIN_ENTRY_PATH; }
+      if (body) { if(body instanceof URLSearchParams)headers['Content-Type'] = 'application/x-www-form-urlencoded'; headers.Origin = this.origin; headers.Referer = this.origin + (options.referer||LOGIN_ENTRY_PATH); }
       let response: Response;
-      try { response = await this.transport(this.endpoint + target, { method, body: body?.toString(), headers, redirect: 'manual', signal: AbortSignal.timeout(15000) }); }
+      try { response = await this.transport(this.endpoint + target, { method, body: body instanceof URLSearchParams?body.toString():body, headers, redirect: 'manual', signal: AbortSignal.timeout(15000) }); }
       catch { throw new LegacyError('UPSTREAM_UNAVAILABLE', 'Não foi possível conectar ao MyID original. Tente novamente mais tarde.'); }
       this.cookies(response);
       if ([301,302,303,307,308].includes(response.status)) {
@@ -231,7 +252,7 @@ export class LegacyClient {
         target = next.pathname + next.search;
         if(options.logout){if(next.pathname==='/'||next.pathname.startsWith('/login/'))return response;throw new LegacyError('LOGOUT_UNCONFIRMED','O portal não confirmou o encerramento da sessão.');}
         if(options.login&&method==='POST'&&next.pathname.startsWith('/login/')&&next.searchParams.get('login_error')==='1')throw new LegacyError('LOGIN_FAILED','Usuário ou senha não reconhecidos pelo MyID.',401);
-        if (!options.login && /^\/login(?:\/|$)/.test(target)) throw new LegacyError('SESSION_EXPIRED', 'Sua sessão no MyID expirou. Conecte novamente.', 401);
+        if (!options.login&&!options.recovery && /^\/login(?:\/|$)/.test(target)) throw new LegacyError('SESSION_EXPIRED', 'Sua sessão no MyID expirou. Conecte novamente.', 401);
         if (response.status === 303 || [301,302].includes(response.status) && method === 'POST') { method = 'GET'; body = undefined; }
         continue;
       }

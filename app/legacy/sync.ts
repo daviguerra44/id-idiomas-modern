@@ -1,13 +1,13 @@
 import { env } from 'cloudflare:workers';
 import {emptyMyIDState} from '../myid-empty';
 import { normalizeMyIDState } from '../myid-state';
-import { boundedBody, decodeHtml, inspectLoginForm, LOGIN_ENTRY_PATH, LegacyClient, LegacyError, parseProfile, findProfileEditPath,parseProfileFields,parseLessons, parseFiles,lessonFileTitle, parseReports, parseReadOnlyDocument, type CookieJar, type Enrollment, type Lesson } from './protocol';
+import { boundedBody, decodeHtml, inspectLoginForm, LOGIN_ENTRY_PATH, LegacyClient, LegacyError, parseProfile, findProfileEditPath,parseProfileFields,parseLessons, parseFiles,lessonFileTitle, parseReports, parseReadOnlyDocument,parseProfilePhoto,profilePhotoForm,hasPhotoForm,recoveryForm,recoveryMessage, type CookieJar, type Enrollment, type Lesson } from './protocol';
 import { seal, unseal, stableId, validKey } from './vault';
 import {inspectAcademicHTML} from './inspection';
 
 type Job = { kind: 'course' | 'lesson' | 'file' | 'report' | 'evaluation' | 'boleto' | 'contract' | 'print' | 'review' | 'profile-edit'; path: string; enrollment: string; lesson?: Lesson; name?: string; lessonKey?: string; documentKind?:string };
 type Resource = {id:string;enrollment:string;type:'lesson'|'document'|'pdf';path:string;name:string;lesson?:Lesson};
-type Session = { autoVersion?:number;reused?:number;resources?:Resource[];accountKey:string;jar: CookieJar; profilePath: string;profileEditPath?:string; enrollments: Enrollment[]; queue: Job[]; completed: number; total: number; imported: number; warnings: string[]; startedAt: string; finishedAt?: string };
+type Session = {photoPath?:string; autoVersion?:number;reused?:number;resources?:Resource[];accountKey:string;jar: CookieJar; profilePath: string;profileEditPath?:string; enrollments: Enrollment[]; queue: Job[]; completed: number; total: number; imported: number; warnings: string[]; startedAt: string; finishedAt?: string };
 type Row = { sealed: string; expires_at: number; failures: number; retry_at: number };
 const now = () => new Date().toISOString();
 const AUTO_VERSION=3,REFRESH_MS=6*60*60*1000;
@@ -32,6 +32,56 @@ export async function inspectConnection(){
   const contract=inspectLoginForm(await client.html(LOGIN_ENTRY_PATH,{login:true}),config.origin);
   return {...connectionStatus(),reachable:true,contract,checkedAt:now()};
 }
+export async function recoverPassword(username:string){
+ const config=configuration(),client=new LegacyClient(config.origin,{},fetch,config.transportOrigin,config.allowHttp);
+ const form=recoveryForm(await client.html('/redefinirSenha',{recovery:true}),config.origin);form.set('username',username);
+ const html=await client.html('/redefinirSenha/create',{method:'POST',body:form,recovery:true,referer:'/redefinirSenha'});
+ const message=recoveryMessage(html);
+ if(/não encontr|inexist|inválid|erro/i.test(message))throw new LegacyError('RECOVERY_REJECTED',message,400);
+ return {message:message||'Solicitação enviada ao portal. Verifique seu e-mail e a pasta de spam.'};
+}
+function imageType(bytes:Uint8Array){
+ if(bytes[0]===255&&bytes[1]===216&&bytes[2]===255)return 'image/jpeg';
+ if(bytes[0]===137&&new TextDecoder().decode(bytes.slice(1,4))==='PNG')return 'image/png';
+ if(new TextDecoder().decode(bytes.slice(0,4))==='RIFF'&&new TextDecoder().decode(bytes.slice(8,12))==='WEBP')return 'image/webp';
+ return null;
+}
+async function cacheOriginalPhoto(config:ReturnType<typeof configuration>,session:Session,client:LegacyClient,path:string){
+ const response=await client.request(path),bytes=await boundedBody(response,5*1024*1024),type=imageType(bytes);
+ if(!type)throw new LegacyError('PHOTO_FORMAT','O portal não retornou uma imagem válida.');
+ await config.bucket.put(session.accountKey+'/avatar',bytes,{httpMetadata:{contentType:type},customMetadata:{source:path}});
+ session.photoPath=path;const avatar='/api/myid/avatar?v='+Date.now();await updateAcademic(session.accountKey,s=>s.profile.avatar=avatar);return avatar;
+}
+export async function originalAvatar(owner:string){
+ const {config,session}=await load(owner),cached=await config.bucket.get(session.accountKey+'/avatar');
+ if(cached&&session.photoPath&&cached.customMetadata?.source===session.photoPath)return new Response(cached.body,{headers:{'Content-Type':cached.httpMetadata?.contentType||'image/jpeg','Cache-Control':'private, max-age=300','X-Content-Type-Options':'nosniff'}});
+ await lease(owner);
+ try{
+  const client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin,config.allowHttp),path=parseProfilePhoto(await client.html(session.profilePath),config.origin);
+  if(!path)throw new LegacyError('PHOTO_NOT_FOUND','O perfil original não possui foto disponível.',404);
+  await cacheOriginalPhoto(config,session,client,path);session.jar=client.jar;await store(owner,session);
+  const photo=await config.bucket.get(session.accountKey+'/avatar');return new Response(photo!.body,{headers:{'Content-Type':photo!.httpMetadata?.contentType||'image/jpeg','Cache-Control':'private, max-age=300','X-Content-Type-Options':'nosniff'}});
+ }finally{await release(owner);}
+}
+export async function uploadOriginalAvatar(owner:string,file:File){
+ if(file.size>5*1024*1024||!file.size)throw new LegacyError('PHOTO_SIZE','Escolha uma imagem de até 5 MB.',400);
+ const bytes=new Uint8Array(await file.arrayBuffer()),type=imageType(bytes);if(!type)throw new LegacyError('PHOTO_FORMAT','Escolha uma imagem JPG, PNG ou WebP.',400);
+ await load(owner);await lease(owner);
+ try{
+  const {config,session}=await load(owner),client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin,config.allowHttp);
+  const profileHTML=await client.html(session.profilePath),edit=findProfileEditPath(profileHTML,config.origin,session.profilePath);
+  if(!edit)throw new LegacyError('PHOTO_EDIT_UNAVAILABLE','A edição de foto não foi disponibilizada pelo perfil.',404);
+  const fields=profilePhotoForm(await client.html(edit),config.origin,session.profilePath),body=new FormData();
+  for(const field of fields)body.append(field.name,field.value);body.append('imagemUpload',new File([bytes],file.name.replace(/[\r\n"\\]/g,'_').slice(0,120),{type}));
+  const landing=await client.html('/perfil/update',{method:'POST',body,photoUpdate:true,referer:edit});
+  if(client.lastPath===edit||hasPhotoForm(landing))throw new LegacyError('PHOTO_REJECTED','O portal original não confirmou a alteração da foto.');
+  const updated=await client.html(session.profilePath),path=parseProfilePhoto(updated,config.origin);
+  if(!path)throw new LegacyError('PHOTO_CONFIRMATION_REQUIRED','O envio foi recebido, mas a foto não pôde ser confirmada no perfil original.');
+  const avatar=await cacheOriginalPhoto(config,session,client,path);session.jar=client.jar;await store(owner,session);
+  return {avatar,message:'Foto atualizada no perfil original.'};
+ }catch(error){if(error instanceof LegacyError&&error.code==='SESSION_EXPIRED')await env.DB!.prepare('UPDATE myid_legacy_session SET expires_at=0 WHERE owner_id=?').bind(owner).run();throw error;}
+ finally{await release(owner);}
+}
 export async function inspectAcademic(owner:string,kind:string,enrollmentId?:string,lessonId?:string){
  if(!['profile','edit','course','lesson'].includes(kind))throw new LegacyError('INSPECTION_INVALID','Inspeção inválida.',400);
  await load(owner);await lease(owner);
@@ -50,8 +100,9 @@ export async function inspectAcademic(owner:string,kind:string,enrollmentId?:str
    }
   }
   const html=await client.html(path),evidence=inspectAcademicHTML(html,config.origin);
+  const photoContract=kind==='edit'?{action:'/perfil/update',method:'POST',enctype:'multipart/form-data',fields:profilePhotoForm(html,config.origin,session.profilePath).map(f=>f.name).concat('imagemUpload'),profileValidated:true}:undefined;
   session.jar=client.jar;await store(owner,session);
-  return {kind,path,...evidence,checkedAt:now()};
+  return {kind,path,...evidence,photoContract,checkedAt:now()};
  }catch(error){if(error instanceof LegacyError&&error.code==='SESSION_EXPIRED')await env.DB!.prepare('UPDATE myid_legacy_session SET expires_at=0 WHERE owner_id=?').bind(owner).run();throw error;}
  finally{await release(owner);}
 }
@@ -99,7 +150,7 @@ export async function connect(owner: string, username: string, password: string)
     if (current!.retry_at > Date.now()) throw new LegacyError('LOGIN_WAIT', 'Aguarde um minuto antes de tentar entrar novamente.', 429);
     const client = new LegacyClient(config.origin,{},fetch,config.transportOrigin,config.allowHttp), profile = await client.login(username,password);
     const accountKey=owner+'|profile:'+await stableId(profile.profilePath);
-    const session: Session = { accountKey,jar: client.jar, profilePath: profile.profilePath, enrollments: profile.enrollments, queue: [], completed:0,total:0,imported:0,warnings:[],startedAt:now() };
+    const session: Session = { accountKey,jar: client.jar, profilePath: profile.profilePath,photoPath:profile.photoPath, enrollments: profile.enrollments, queue: [], completed:0,total:0,imported:0,warnings:[],startedAt:now() };
     await updateAcademic(accountKey,s=>mergeProfile(s,profile));
     await config.db.prepare('UPDATE myid_legacy_session SET sealed=?,expires_at=?,failures=0,retry_at=0,updated_at=? WHERE owner_id=?').bind(await seal(session,config.key,owner),Date.now()+2*60*60*1000,now(),owner).run();
     return { connected:true, enrollments:profile.enrollments.length };
@@ -134,7 +185,8 @@ function mergeProfile(s: any, profile: ReturnType<typeof parseProfile>) {
   s.notebooks=Object.fromEntries(Object.entries(s.notebooks).filter(([id])=>materialIds.has(id)));
   s.tasks=s.tasks.filter((t:any)=>!t.courseId||courseIds.has(t.courseId));s.attendance=s.attendance.filter((a:any)=>courseIds.has(a.courseId));
   if (profile.name) s.profile.name=profile.name;
-  s.connection={...s.connection,status:'connected',syncedAt:now(),profileParserVersion:2};
+  if(profile.photoPath)s.profile.avatar='/api/myid/avatar?v='+Date.now();
+  s.connection={...s.connection,status:'connected',syncedAt:now(),profileParserVersion:3};
   if(enrollmentsChanged)s.connection.catalogVersion=0;
   for (const enrollment of profile.enrollments) {
     const id=courseId(s,enrollment), teacherId='legacy-teacher-'+enrollment.id;
@@ -162,7 +214,7 @@ export async function start(owner: string,automatic=false) {
       if(connection?.catalogVersion===AUTO_VERSION&&Date.now()-Date.parse(connection.lastFullSyncAt||'')<REFRESH_MS){session.queue=[];session.autoVersion=AUTO_VERSION;session.finishedAt=connection.lastFullSyncAt;await store(owner,session);return progress(session);}
     }
     const profileHTML=await client.html(session.profilePath),profile=parseProfile(profileHTML,config.origin);
-    session.enrollments=profile.enrollments;session.jar=client.jar;session.queue=[];session.completed=0;session.total=0;session.imported=0;session.reused=0;session.autoVersion=AUTO_VERSION;session.warnings=[];session.startedAt=now();delete session.finishedAt;
+    session.enrollments=profile.enrollments;session.photoPath=profile.photoPath;session.jar=client.jar;session.queue=[];session.completed=0;session.total=0;session.imported=0;session.reused=0;session.autoVersion=AUTO_VERSION;session.warnings=[];session.startedAt=now();delete session.finishedAt;
     session.profileEditPath=findProfileEditPath(profileHTML,config.origin,session.profilePath);
     if(session.profileEditPath)session.queue.push({kind:'profile-edit',path:session.profileEditPath,enrollment:''});
     for (const e of profile.enrollments) for (const [kind,key] of [['course','curso'],['report','reportCardMatricula'],['evaluation','evaluationMatricula'],['boleto','boletoPrint'],['contract','contratoPrint'],['review','revisarContrato']] as const) {

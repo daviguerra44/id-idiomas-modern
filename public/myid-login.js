@@ -1,43 +1,40 @@
-(()=>{'use strict';
-let busy=false,generation=0,forceLogin=false;
+﻿(()=>{'use strict';
+let busy=false,generation=0;
 const get=s=>document.querySelector(s);
 async function request(action,values={}){
  for(let attempt=0;;attempt++){
   const response=await fetch('/api/myid/connection',{credentials:'same-origin',...(action?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,...values})}:{})});
-  let data;try{data=await response.json()}catch{throw new Error('Não foi possível consultar o MyID. Tente novamente.')}
-  if(!response.ok){if(data.code==='SYNC_BUSY'&&attempt<8){await new Promise(resolve=>setTimeout(resolve,700+attempt*150));continue}const error=new Error(data.error||'Não foi possível entrar no MyID.');error.status=response.status;throw error;}return data;
+  const data=await response.json();if(response.ok)return data;
+  if(data.code==='SYNC_BUSY'&&attempt<8){await new Promise(resolve=>setTimeout(resolve,700+attempt*150));continue;}
+  throw new Error(data.error||'Não foi possível entrar. Tente novamente.');
  }
 }
-function controls(){const form=get('#myid-entry-form');if(!form)return;form.querySelectorAll('input,button').forEach(el=>{el.disabled=busy});}
-function message(text,error=false){const node=get('#myid-entry-status');if(node){node.textContent=text;node.setAttribute('role',error?'alert':'status');}}
-function clearPassword(){const input=get('#myid-entry-password');if(input){input.value='';input.type='password'}const toggle=get('#myid-password-toggle');if(toggle){toggle.setAttribute('aria-pressed','false');toggle.setAttribute('aria-label','Mostrar senha');toggle.textContent='Mostrar';}}
-async function refresh(){
- const ticket=++generation;forceLogin=false;controls();clearPassword();get('#myid-entry-form').hidden=false;get('#myid-entry-connected').hidden=true;
- get('#myid-entry-submit').textContent='Entrar com minha conta ID';message('Verificando conexão com o portal original…');
- try{const status=await request();if(ticket!==generation)return;
-  if(!status.configured){message(status.reason+' Ao confirmar, verificaremos a conexão novamente.');return;}
-  if(status.connected){get('#myid-entry-form').hidden=true;get('#myid-entry-connected').hidden=false;message('Sua conta está conectada. Seus dados já salvos aparecem ao entrar.');return;}
-  controls();message('Use o mesmo usuário e senha do portal MyID. Sua senha não será salva.');
- }catch(error){if(ticket!==generation)return;message(error.status===403?'Sua conta não tem permissão para acessar esta página.':error.status===401?'Entre na conta autorizada para acessar esta prévia.':error.message);}
+function message(text,error=false){const node=get('#myid-entry-status');node.textContent=text;node.setAttribute('role',error?'alert':'status');}
+function clearPassword(){const input=get('#myid-entry-password');input.value='';input.type='password';get('#myid-password-toggle').textContent='Mostrar';get('#myid-password-toggle').setAttribute('aria-pressed','false');}
+function loginView(){get('#myid-entry-form').hidden=false;get('#myid-recovery-form').hidden=true;get('#myid-entry-heading').textContent='Entre no MyID';message('');}
+function enter(changed=false){const dialog=get('#login-dialog');if(dialog.hasAttribute('open'))dialog.close();window.MyID?.invalidate();if(changed)window.MyIDAuto?.accountChanged();else window.MyIDAuto?.start();location.hash='#/my-id';}
+async function open(force=false){
+ if(busy)return;const ticket=++generation;clearPassword();loginView();
+ try{const status=await request();if(ticket!==generation)return;if(status.connected&&!force){enter();return;}if(!status.configured)message(status.reason,true);}
+ catch(error){if(ticket!==generation)return;message(error.message,true);}
+ if(!get('#login-dialog').hasAttribute('open'))get('#login-dialog').showModal();
 }
-function openConnected(changed=false){const dialog=get('#login-dialog');dialog.close();window.MyID?.invalidate();if(changed)window.MyIDAuto?.accountChanged();else window.MyIDAuto?.start();location.hash='#/my-id';}
 function init(){
- const form=get('#myid-entry-form'),dialog=get('#login-dialog');if(!form||!dialog)return;
+ const dialog=get('#login-dialog'),form=get('#myid-entry-form');if(!dialog||!form)return;
  form.onsubmit=async event=>{event.preventDefault();if(busy)return;const username=get('#myid-entry-username').value.trim(),password=get('#myid-entry-password').value;if(!username||!password){message('Informe seu usuário e sua senha.',true);return;}
-  const ticket=generation;busy=true;controls();message('Verificando conexão…');get('#myid-entry-submit').textContent='Verificando…';
-  try{const status=await request();if(ticket!==generation||!dialog.hasAttribute('open'))return;
-   if(!status.configured)throw new Error('Não foi possível entrar: '+status.reason+' Sua senha não foi enviada.');
-   if(status.connected&&!forceLogin){openConnected();return;}
-   message('Autenticando no portal original…');get('#myid-entry-submit').textContent='Entrando…';
-   await request('connect',{username,password});clearPassword();if(ticket===generation&&dialog.hasAttribute('open'))openConnected(true);}
+  const ticket=generation,button=get('#myid-entry-submit');busy=true;button.disabled=true;button.textContent='Entrando…';message('');
+  try{const status=await request();if(!status.configured)throw new Error(status.reason+' Sua senha não foi enviada.');await request('connect',{username,password});if(ticket===generation&&dialog.hasAttribute('open'))enter(true);}
   catch(error){if(ticket===generation)message(error.message,true);}
-  finally{busy=false;clearPassword();controls();get('#myid-entry-submit').textContent='Entrar com minha conta ID';if(ticket!==generation&&dialog.hasAttribute('open'))refresh();}
+  finally{busy=false;clearPassword();button.disabled=false;button.textContent='Entrar';}
  };
- get('#myid-password-toggle').onclick=()=>{const input=get('#myid-entry-password'),toggle=get('#myid-password-toggle'),show=input.type==='password';input.type=show?'text':'password';toggle.textContent=show?'Ocultar':'Mostrar';toggle.setAttribute('aria-label',show?'Ocultar senha':'Mostrar senha');toggle.setAttribute('aria-pressed',String(show));};
- get('#myid-entry-continue').onclick=()=>openConnected();
- get('#myid-entry-switch').onclick=()=>{forceLogin=true;get('#myid-entry-form').hidden=false;get('#myid-entry-connected').hidden=true;get('#myid-entry-username').value='';clearPassword();get('#myid-entry-username').focus?.();message('Entre com a outra conta MyID. Seus dados serão carregados separadamente.');};
- dialog.addEventListener('close',()=>{generation++;controls();clearPassword();});
- if(location.hash==='#/entrar')refresh();
+ get('#myid-password-toggle').onclick=()=>{const input=get('#myid-entry-password'),show=input.type==='password';input.type=show?'text':'password';get('#myid-password-toggle').textContent=show?'Ocultar':'Mostrar';get('#myid-password-toggle').setAttribute('aria-pressed',String(show));};
+ get('#myid-forgot').onclick=()=>{clearPassword();get('#myid-entry-form').hidden=true;get('#myid-recovery-form').hidden=false;get('#myid-entry-heading').textContent='Recuperar senha';get('#myid-recovery-username').value=get('#myid-entry-username').value;message('');};
+ get('#myid-back-login').onclick=loginView;
+ get('#myid-recovery-form').onsubmit=async event=>{event.preventDefault();if(busy)return;const username=get('#myid-recovery-username').value.trim();if(!username){message('Informe seu usuário ou e-mail.',true);return;}const button=event.target.querySelector('[type="submit"]');busy=true;button.disabled=true;message('Enviando…');
+  try{const r=await fetch('/api/myid/recovery',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({username})}),data=await r.json();if(!r.ok)throw new Error(data.error||'Não foi possível enviar.');message(data.message);}
+  catch(error){message(error.message,true);}finally{busy=false;button.disabled=false;}
+ };
+ dialog.addEventListener('close',()=>{generation++;clearPassword();});if(location.hash==='#/entrar')void open();
 }
-window.MyIDLogin={refresh};if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
+window.MyIDLogin={open,refresh:open};if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 })();
