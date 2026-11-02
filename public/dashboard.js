@@ -117,8 +117,8 @@ let accountGeneration=0,courseLoading=null;const courseAttempts=new Map();
 async function academicJSON(url){const r=await fetch(url,{credentials:'same-origin'});const data=await r.json();if(!r.ok){const err=new Error(data.error||'Não foi possível carregar as aulas.');err.code=data.code;throw err}return data}
 async function hydrateCourse(id){
  const course=state?.courses.find(c=>c.id===id);if(!course||readOnly||course.source!=='myid'||!course.availableResources?.includes('curso')||courseLoading||Date.now()-(courseAttempts.get(id)||0)<300000)return;
- const ticket=accountGeneration;courseLoading=id;courseAttempts.set(id,Date.now());let missing=0;
- const active=()=>ticket===accountGeneration&&current.page==='curso'&&current.id===id;
+ const ticket=accountGeneration;courseLoading=id;courseAttempts.set(id,Date.now());let missing=0,failed=false;
+ const active=()=>ticket===accountGeneration&&current.page==='curso'&&current.id===id&&!q('#portal').hidden;
  const message=text=>{if(active()&&q('#edi-save-status'))q('#edi-save-status').textContent=text};
  const reload=async()=>{if(ticket!==accountGeneration)return;state=null;await load();if(active())await render('curso',id)};
  try{
@@ -131,8 +131,8 @@ async function hydrateCourse(id){
    try{await academicJSON('/api/myid/enrollments/'+encodeURIComponent(course.legacyEnrollmentId)+'/lessons/'+encodeURIComponent(lesson.id))}catch(error){if(error.code==='FILES_NOT_FOUND'){missing++;continue}throw error}
    if(i%3===2)await reload();await new Promise(resolve=>setTimeout(resolve,350));
   }
- }catch(error){if(active())toast(error.message)}
- finally{courseLoading=null;if(ticket===accountGeneration){try{await reload();if(active())message(missing?missing+' aula(s) sem PDF no portal original':'Aulas atualizadas')}catch(error){if(active())toast(error.message)}}}
+ }catch(error){failed=true;if(active())toast(error.message)}
+ finally{const paused=!active();if(ticket===accountGeneration){try{await reload();if(active())message(missing?missing+' aula(s) sem PDF no portal original':'Aulas atualizadas')}catch(error){failed=true;if(active())toast(error.message)}}courseLoading=null;if(paused||failed)courseAttempts.delete(id)}
 }
 
 window.MyID={render,gradeTone,mean,getState:()=>state,clear:()=>{accountGeneration++;courseAttempts.clear();state=null;loadPromise=null;q('#portal').innerHTML='';clearInterval(countdownTimer)},invalidate:()=>{accountGeneration++;state=null;loadPromise=null},pause:()=>clearInterval(countdownTimer)};if(location.hash.startsWith('#/my-id')){const p=location.hash.slice(2).split('/');render(p[1]||'inicio',p[2]||'')}
