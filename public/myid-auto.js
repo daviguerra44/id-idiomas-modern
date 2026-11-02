@@ -1,5 +1,5 @@
 (()=>{'use strict';
-let running=false,timer=null,generation=0,forceNext=false,lastRefresh=0;
+let running=false,timer=null,generation=0,forceNext=false,lastRefresh=0,pausedUntil=0,interactiveCount=0;
 const channel=typeof BroadcastChannel==='function'?new BroadcastChannel('myid-account-updates'):null;
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function request(action){
@@ -27,7 +27,7 @@ async function run(ticket){
  if(ticket===generation){lastRefresh=0;await changed();}
 }
 async function start(force=false){
- forceNext=forceNext||force;if(running)return;running=true;const ticket=generation;let acquired=true;
+ forceNext=forceNext||force;if(interactiveCount||Date.now()<pausedUntil){schedule(Math.max(1000,pausedUntil-Date.now()));return;}if(running)return;running=true;const ticket=generation;let acquired=true;
  try{
   if(navigator.locks?.request)await navigator.locks.request('myid-background-update',{ifAvailable:true},async lock=>{if(!lock){acquired=false;return}await run(ticket)});
   else await run(ticket);
@@ -35,12 +35,18 @@ async function start(force=false){
   if(ticket===generation&&error.status===401){lastRefresh=0;await changed();}
  }finally{running=false;schedule(ticket!==generation?0:forceNext?1000:acquired?60000:10000);}
 }
+function pause(until){generation++;pausedUntil=Math.max(pausedUntil,until);clearTimeout(timer);schedule(Math.max(1000,pausedUntil-Date.now()));}
+async function interactive(task){
+ interactiveCount++;const until=Date.now()+120000;pause(until);channel?.postMessage({type:'pause',until});
+ try{return navigator.locks?.request?await navigator.locks.request('myid-background-update',{},()=>task()):await task();}
+ finally{interactiveCount--;if(!interactiveCount){pausedUntil=0;channel?.postMessage({type:'resume'});schedule(1000);}}
+}
 function accountChanged(broadcast=true){
  generation++;forceNext=false;clearTimeout(timer);lastRefresh=0;window.MyID?.clear?.();
  if(broadcast)channel?.postMessage({type:'account'});
  if(!running)void start();else schedule(1000);
 }
-if(channel)channel.onmessage=event=>{if(event.data?.type==='data')void changed(false);else if(event.data?.type==='account'){accountChanged(false);if(location.hash.startsWith('#/my-id')){location.hash='#/my-id';void window.MyID?.render?.('inicio')}}};
-window.MyIDAuto={start,accountChanged};
+if(channel)channel.onmessage=event=>{if(event.data?.type==='pause')pause(Math.min(Date.now()+120000,Number(event.data.until)||Date.now()));else if(event.data?.type==='resume'){pausedUntil=0;schedule(1000);}else if(event.data?.type==='data')void changed(false);else if(event.data?.type==='account'){accountChanged(false);if(location.hash.startsWith('#/my-id')){location.hash='#/my-id';void window.MyID?.render?.('inicio')}}};
+window.MyIDAuto={start,accountChanged,interactive};
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>start());else void start();
 })();

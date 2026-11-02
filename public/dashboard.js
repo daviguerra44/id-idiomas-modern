@@ -91,12 +91,13 @@ function bindForms(){
 if(q('#edi-switch-myid'))q('#edi-switch-myid').onclick=()=>window.MyIDLogin?.open(true);
 if(q('#edi-original-photo')){
  const input=q('#edi-original-avatar-file'),save=q('#edi-photo-save'),status=q('#edi-photo-status');
- input.onchange=()=>{const file=input.files[0];if(!file)return;if(file.size>5*1024*1024||!['image/jpeg','image/png','image/webp'].includes(file.type)){status.textContent='Escolha JPG, PNG ou WebP de até 5 MB.';save.hidden=true;return;}const reader=new FileReader();reader.onload=()=>{q('#edi-original-avatar-preview').innerHTML='<img src="'+reader.result+'" alt="Prévia da foto">';save.hidden=false;status.textContent='';};reader.readAsDataURL(file);};
- q('#edi-original-photo').onsubmit=async event=>{event.preventDefault();const file=input.files[0];if(!file)return;save.disabled=true;status.textContent='Salvando no MyID…';try{
-  const body=new FormData();body.append('image',file);let data;
-  for(let attempt=0;;attempt++){const response=await fetch('/api/myid/avatar',{method:'POST',credentials:'same-origin',body});data=await response.json();if(response.ok)break;if(data.code==='SYNC_BUSY'&&attempt<8){await new Promise(resolve=>setTimeout(resolve,700+attempt*150));continue;}throw new Error(data.error||'Não foi possível salvar a foto.');}
+ input.onchange=()=>{const file=input.files[0];if(!file)return;if(file.size>5*1024*1024||!['image/jpeg','image/png','image/webp'].includes(file.type)){status.textContent='Escolha JPG, PNG ou WebP de até 5 MB.';save.hidden=true;return;}const reader=new FileReader();reader.onload=()=>{q('#edi-original-avatar-preview').innerHTML='<img src="'+reader.result+'" alt="Prévia da foto">';save.hidden=false;status.textContent='Prévia — ainda não salva no MyID.';};reader.readAsDataURL(file);};
+ q('#edi-original-photo').onsubmit=async event=>{event.preventDefault();const file=input.files[0];if(!file)return;save.disabled=true;input.disabled=true;status.textContent='Salvando no MyID…';try{
+  const send=async()=>{const body=new FormData();body.append('image',file);let data;
+  for(let attempt=0;;attempt++){const response=await fetch('/api/myid/avatar',{method:'POST',credentials:'same-origin',body});data=await response.json();if(response.ok)break;if(data.code==='SYNC_BUSY'&&attempt<8){await new Promise(resolve=>setTimeout(resolve,700+attempt*150));continue;}throw new Error(data.error||'Não foi possível salvar a foto.');}return data;};
+  const data=await (window.MyIDAuto?.interactive?window.MyIDAuto.interactive(send):send());
   state.profile.avatar=data.avatar;await refreshData();await render('perfil');toast(data.message);
- }catch(error){status.textContent=error.message;}finally{save.disabled=false;}};
+ }catch(error){status.textContent=error.message+' A prévia não confirma a gravação.';}finally{save.disabled=false;input.disabled=false;}};
 }
 if(q('#edi-document-course'))q('#edi-document-course').onchange=evt=>location.hash='#/my-id/'+current.page+'/'+evt.target.value;if(q('#edi-report-number'))q('#edi-report-number').onchange=evt=>{const cId=q('#edi-report-course').value;reportSelections[cId]=Number(evt.target.value);render('boletim',cId)};if(q('#edi-library-search')){q('#edi-library-search').oninput=evt=>{library.query=evt.target.value;fillLibrary()};q('#edi-library-type').onchange=evt=>{library.type=evt.target.value;fillLibrary()};q('#edi-library-course').onchange=evt=>{library.course=evt.target.value;fillLibrary()}}
 if(q('#edi-report-course'))q('#edi-report-course').onchange=evt=>location.hash='#/my-id/boletim/'+evt.target.value;

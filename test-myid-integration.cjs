@@ -25,7 +25,7 @@ const html=(text,options={})=>new Response(text,{...options,headers:{'content-ty
 
  const recovery=protocol.recoveryForm(fs.readFileSync('tests/fixtures/myid-recovery-public.html','utf8'),origin);assert(recovery instanceof URLSearchParams);assert.equal(recovery.size,0);
  const multipart=new FormData();multipart.append('id','abcdef1234');multipart.append('imagemUpload',new File([new Uint8Array([137,80,78,71])],'image.png',{type:'image/png'}));let photoRequest=false;
- await new protocol.LegacyClient(origin,{JSESSIONID:'photo-only'},async(url,options)=>{photoRequest=true;assert.equal(url,origin+'/perfil/update');assert(options.body instanceof FormData);assert.equal(options.headers['Content-Type'],undefined,'The HTTP client must generate the multipart boundary');assert.equal(options.headers.Cookie,'JSESSIONID=photo-only');return html(profile)}).html('/perfil/update',{method:'POST',body:multipart,photoUpdate:true,referer:'/perfil/edit/abcdef1234'});assert(photoRequest);
+ await new protocol.LegacyClient(origin,{JSESSIONID:'photo-only'},async(url,options)=>{photoRequest=true;assert.equal(url,origin+'/perfil/update');assert(options.body instanceof Uint8Array,'Multipart must have a fixed-size byte body');assert.match(options.headers['Content-Type'],/^multipart\/form-data; boundary=/);assert.equal(options.headers['Content-Length'],undefined,'The runtime determines the length');assert.equal(options.body.at(-2),13);assert.equal(options.body.at(-1),10);const sent=await new Response(options.body,{headers:{'content-type':options.headers['Content-Type']}}).formData();assert.equal(sent.get('id'),'abcdef1234');assert.deepEqual(new Uint8Array(await sent.get('imagemUpload').arrayBuffer()),new Uint8Array([137,80,78,71]));assert.equal(options.headers.Cookie,'JSESSIONID=photo-only');return html(profile)}).html('/perfil/update',{method:'POST',body:multipart,photoUpdate:true,referer:'/perfil/edit/abcdef1234'});assert(photoRequest);
  const parsed=protocol.parseProfile(profile,origin);assert.equal(parsed.enrollments.length,1);assert.equal(parsed.enrollments[0].registration,'2026.2.08779');assert.equal(parsed.enrollments[0].teacher,'Professora Teste');
  const reports=protocol.parseReports(report,origin);assert.equal(reports[0].officialGrade,7.24);assert.equal(reports[0].scores[1].value,0);assert.equal(reports[1].available,false);assert(reports[0].comment.includes('Continue praticando'));assert.equal(reports[0].printPath,'/reportCard/print/17407?u=0');
  assert.throws(()=>protocol.loginForm(form.replace('<form ','<form enctype="application/json" '),origin),e=>e.code==='LOGIN_ENCODING');
@@ -124,6 +124,29 @@ const html=(text,options={})=>new Response(text,{...options,headers:{'content-ty
  assert.equal((await sync.disconnect('owner')).remoteLogout,'requested');assert.equal(sessions.get('owner').sealed,'');
  const normalTransport=transport;transport=async(url,options)=>url.endsWith('/logout/index')?new Response(null,{status:503}):normalTransport(url,options);await sync.connect('owner','test-user','test-password');assert.equal((await sync.disconnect('owner')).remoteLogout,'unconfirmed');assert.equal(sessions.get('owner').sealed,'','Local session must be cleared even when remote logout fails');
 
+ // Photo writes: one POST, fresh form version, verified image and failed redirects.
+ // Transport is intercepted; no test image is sent to a real account.
+ transport=normalTransport;await sync.connect('photo-owner','test-user','test-password');
+ const photoAccount=(await sync.accountContext('photo-owner')).accountKey;
+ const chosen=new Uint8Array(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=','base64'));
+ const oldPhoto=new Uint8Array(chosen);oldPhoto[oldPhoto.length-1]^=1;
+ const withPhoto=profile+'<a href="/perfil/edit/abcdef1234">Editar perfil</a><div class="caixa-foto-perfil"><img src="/storage/uploads/Perfil/abc/photo.png"></div>';
+ const editPhoto='<form method="post" action="/perfil/update" enctype="multipart/form-data"><input name="id" type="hidden" value="abcdef1234"><input name="version" type="hidden" value="7"><input name="imagemUpload" type="file"><input type="submit" value="Alterar"></form>';
+ let posted=0,saved=false,mode='redirect-error';
+ transport=async(url,options)=>{
+  if(url.endsWith('/perfil/update')){posted++;const sent=await new Response(options.body,{headers:{'content-type':options.headers['Content-Type']}}).formData();assert.equal(sent.get('id'),'abcdef1234');assert.equal(sent.get('version'),'7');assert.equal(sent.get('imagemUpload').name,'selected.png');assert.deepEqual(new Uint8Array(await sent.get('imagemUpload').arrayBuffer()),chosen);saved=mode!=='unchanged'&&mode!=='success-unchanged';if(mode==='redirect-error')return new Response(null,{status:302,headers:{location:'/perfil/curso/999'}});if(mode==='repeat-redirect')return new Response(null,{status:307,headers:{location:'/perfil/update'}});if(mode==='success'||mode==='success-unchanged')return html(withPhoto);return new Response('Not found',{status:404});}
+  if(url.endsWith('/perfil/curso/999'))return new Response('Not found',{status:404});
+  if(url.endsWith('/perfil/edit/abcdef1234'))return html(editPhoto);
+  if(url.endsWith('/storage/uploads/Perfil/abc/photo.png'))return new Response(saved?chosen:oldPhoto,{headers:{'content-type':'image/png'}});
+  if(url.endsWith('/perfil/show/abcdef1234'))return html(withPhoto);
+  throw Error('Unexpected photo fixture '+url);
+ };
+ const selection=()=>new File([chosen],'selected.png',{type:'image/png'});
+ let photoResult=await sync.uploadOriginalAvatar('photo-owner',selection());assert.equal(photoResult.reconciled,true);assert.equal(posted,1);assert.equal(JSON.parse(academics.get(photoAccount).document).connection.lastPhotoAttempt.saved,true);assert.equal(sessions.get('photo-owner').locked_until,0);
+ for(mode of ['unchanged','success-unchanged']){saved=false;posted=0;await assert.rejects(()=>sync.uploadOriginalAvatar('photo-owner',selection()),e=>e.code==='PHOTO_UPDATE_FAILED');assert.equal(posted,1,'Do not replay an unconfirmed write');const attempt=JSON.parse(academics.get(photoAccount).document).connection.lastPhotoAttempt;assert.equal(attempt.saved,false);assert(attempt.trace.some(h=>h.method==='POST'));assert(!JSON.stringify(attempt).includes('test-only'));assert.equal(sessions.get('photo-owner').locked_until,0);}
+ for(mode of ['success','repeat-redirect']){saved=false;posted=0;photoResult=await sync.uploadOriginalAvatar('photo-owner',selection());assert.equal(posted,1);assert(photoResult.avatar.startsWith('/api/myid/avatar?'));assert.equal(JSON.parse(academics.get(photoAccount).document).connection.lastPhotoAttempt.saved,true);}
+ const avatarAPI=load('app/api/myid/avatar/route.ts');user=null;assert.equal((await avatarAPI.GET()).status,401);user={userId:'photo',email:'photo@example.test'};assert.equal((await avatarAPI.POST(new Request('https://preview.test/api/myid/avatar',{method:'POST',headers:{origin:'https://evil.test'}}))).status,403);user=null;
+ transport=normalTransport;
  // HTTP requires a server-only explicit opt-in; a frontend payload cannot enable it.
  env.MYID_ORIGIN=logical;env.MYID_CONNECTION_VERIFIED='true';env.MYID_ALLOW_INSECURE_HTTP=undefined;assert.equal(sync.connectionStatus().configured,false);
  env.MYID_ALLOW_INSECURE_HTTP='true';assert.equal(sync.connectionStatus().configured,true);

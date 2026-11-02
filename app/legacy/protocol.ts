@@ -206,6 +206,15 @@ export function parseReadOnlyDocument(html: string, origin: string) {
 }
 
 export type CookieJar = Record<string, string>;
+export async function fixedMultipart(form:FormData){
+  const response=new Response(form),contentType=response.headers.get('content-type');
+  if(!contentType?.startsWith('multipart/form-data;'))throw new LegacyError('MULTIPART_FORMAT','Não foi possível preparar o envio da foto.');
+  const bytes=await boundedBody(response,6*1024*1024);
+  // Fixed-size bytes let Workers generate Content-Length instead of a chunked
+  // request. Preserve the generated boundary and a browser-compatible CRLF.
+  if(bytes.at(-2)===13&&bytes.at(-1)===10)return {body:new Uint8Array(bytes),contentType};
+  const body=new Uint8Array(bytes.length+2);body.set(bytes);body.set([13,10],bytes.length);return {body,contentType};
+}
 export class LegacyClient {
   lastPath='';
   trace:{method:string;path:string;status:number;location?:string}[]=[];
@@ -230,24 +239,29 @@ export class LegacyClient {
     }
     if (Object.keys(this.jar).length > 20) throw new LegacyError('COOKIE_LIMIT', 'O portal retornou uma sessão incompatível.');
   }
-  async request(path: string, options: { method?: 'GET' | 'POST'|'HEAD'|'OPTIONS'; body?: URLSearchParams|FormData; login?: boolean; logout?: boolean;photoUpdate?:boolean;observe?:boolean;recovery?:boolean;referer?:string } = {}) {
+  async request(path: string, options: { method?: 'GET' | 'POST'|'HEAD'|'OPTIONS'; body?: URLSearchParams|FormData; login?: boolean; logout?: boolean;photoUpdate?:boolean;observe?:boolean;recovery?:boolean;referer?:string;fresh?:boolean } = {}) {
     let target = path, method = options.method || 'GET', body = options.body;
     for (let i = 0; i < 5; i++) {
       const safe = safePath(target, this.origin), loginPath = options.login && /^(?:\/|\/login\/[\w-]+)$/.test(target);
       const recoveryPath=options.recovery&&/^\/(?:redefinirSenha(?:\/create)?|login\/auth)(?:\?[^#]*)?$/.test(target);
       if (!safe && !loginPath && !recoveryPath && !(options.photoUpdate&&target==='/perfil/update'&&['POST','HEAD','OPTIONS'].includes(method)) && !(options.logout&&target==='/logout/index'&&method==='GET')) throw new LegacyError('PATH_BLOCKED', 'O portal indicou um endereço fora do escopo da integração.');
       const headers: Record<string, string> = { Accept: 'text/html,application/pdf;q=0.9' };
+      if(options.fresh){headers['Cache-Control']='no-cache';headers.Pragma='no-cache';}
       const cookie = Object.entries(this.jar).map(([k,v]) => k + '=' + v).join('; '); if (cookie) headers.Cookie = cookie;
+      let outgoing:URLSearchParams|FormData|Uint8Array<ArrayBuffer>|undefined=body;
       if (body) { if(body instanceof URLSearchParams)headers['Content-Type'] = 'application/x-www-form-urlencoded'; headers.Origin = this.origin; headers.Referer = this.origin + (options.referer||LOGIN_ENTRY_PATH); }
+      if(body&&!(body instanceof URLSearchParams)){const encoded=await fixedMultipart(body);outgoing=encoded.body;headers['Content-Type']=encoded.contentType;}
+      const tracePath=(raw:string)=>new URL(raw,this.origin).pathname.replace(/;jsessionid=[^/;?]*/gi,';jsessionid=[redacted]');
+      const hop:{method:string;path:string;status:number;location?:string}={method,path:tracePath(target),status:0};this.trace.push(hop);
       let response: Response;
-      try { response = await this.transport(this.endpoint + target, { method, body: body instanceof URLSearchParams?body.toString():body, headers, redirect: 'manual', signal: AbortSignal.timeout(15000) }); }
+      try { response = await this.transport(this.endpoint + target, { method, body: outgoing instanceof URLSearchParams?outgoing.toString():outgoing, headers, redirect: 'manual', ...(options.fresh?{cache:'no-store' as const}:{}), signal: AbortSignal.timeout(15000) }); }
       catch { throw new LegacyError('UPSTREAM_UNAVAILABLE', 'Não foi possível conectar ao MyID original. Tente novamente mais tarde.'); }
       this.cookies(response);
-      const tracePath=(raw:string)=>new URL(raw,this.origin).pathname.replace(/;jsessionid=[^/;?]*/gi,';jsessionid=[redacted]');
-      this.trace.push({method,path:tracePath(target),status:response.status,...(response.headers.get('location')?{location:tracePath(response.headers.get('location')!)}:{})});
+      hop.status=response.status;if(response.headers.get('location'))hop.location=tracePath(response.headers.get('location')!);
       if(options.observe&&options.photoUpdate&&['HEAD','OPTIONS'].includes(method))return response;
       if ([301,302,303,307,308].includes(response.status)) {
         await response.body?.cancel();
+        if(options.photoUpdate&&method==='POST'&&[307,308].includes(response.status))throw new LegacyError('PHOTO_REDIRECT_UNCONFIRMED','O portal pediu um redirecionamento que repetiria o envio da foto.');
         const location = response.headers.get('location'); if (!location) throw new LegacyError('REDIRECT_INVALID', 'O portal retornou um redirecionamento inválido.');
         const next = new URL(location, this.origin + target);
         if(next.username||next.password)throw new LegacyError('REDIRECT_BLOCKED','O portal retornou um redirecionamento com credenciais embutidas.');

@@ -46,9 +46,11 @@ function imageType(bytes:Uint8Array){
  if(new TextDecoder().decode(bytes.slice(0,4))==='RIFF'&&new TextDecoder().decode(bytes.slice(8,12))==='WEBP')return 'image/webp';
  return null;
 }
-async function cacheOriginalPhoto(config:ReturnType<typeof configuration>,session:Session,client:LegacyClient,path:string){
- const response=await client.request(path),bytes=await boundedBody(response,5*1024*1024),type=imageType(bytes);
- if(!type)throw new LegacyError('PHOTO_FORMAT','O portal não retornou uma imagem válida.');
+async function readOriginalPhoto(client:LegacyClient,path:string){
+ const response=await client.request(path,{fresh:true}),bytes=await boundedBody(response,5*1024*1024),type=imageType(bytes);if(!type)throw new LegacyError('PHOTO_FORMAT','O portal não retornou uma imagem válida.');return {bytes,type};
+}
+async function cacheOriginalPhoto(config:ReturnType<typeof configuration>,session:Session,client:LegacyClient,path:string,received?:{bytes:Uint8Array;type:string}){
+ const {bytes,type}=received||await readOriginalPhoto(client,path);
  await config.bucket.put(session.accountKey+'/avatar',bytes,{httpMetadata:{contentType:type},customMetadata:{source:path}});
  session.photoPath=path;const avatar='/api/myid/avatar?v='+Date.now();await updateAcademic(session.accountKey,s=>s.profile.avatar=avatar);return avatar;
 }
@@ -66,21 +68,41 @@ export async function originalAvatar(owner:string){
 export async function uploadOriginalAvatar(owner:string,file:File){
  if(file.size>5*1024*1024||!file.size)throw new LegacyError('PHOTO_SIZE','Escolha uma imagem de até 5 MB.',400);
  const bytes=new Uint8Array(await file.arrayBuffer()),type=imageType(bytes);if(!type)throw new LegacyError('PHOTO_FORMAT','Escolha uma imagem JPG, PNG ou WebP.',400);
- await load(owner);await lease(owner);
+ await load(owner);await lease(owner,240000);
+ try{return await uploadPhotoLocked(owner,file,bytes,type);}finally{await release(owner);}
+}
+async function uploadPhotoLocked(owner:string,file:File,bytes:Uint8Array<ArrayBuffer>,type:string){
+ const {config,session}=await load(owner),client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin,config.allowHttp);let stage='profile';
+ const record=async(saved:boolean,code?:string)=>updateAcademic(session.accountKey,s=>{s.connection??={};s.connection.lastPhotoAttempt={at:now(),saved,stage,code,trace:client.trace};});
  try{
-  const {config,session}=await load(owner),client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin,config.allowHttp);
   const profileHTML=await client.html(session.profilePath),edit=findProfileEditPath(profileHTML,config.origin,session.profilePath);
   if(!edit)throw new LegacyError('PHOTO_EDIT_UNAVAILABLE','A edição de foto não foi disponibilizada pelo perfil.',404);
-  const fields=profilePhotoForm(await client.html(edit),config.origin,session.profilePath),body=new FormData();
+  let previous:Uint8Array|undefined;const previousPath=parseProfilePhoto(profileHTML,config.origin);
+  if(previousPath){try{previous=(await readOriginalPhoto(client,previousPath)).bytes;}catch(error){if(error instanceof LegacyError&&error.code==='SESSION_EXPIRED')throw error;}}
+  stage='form';const fields=profilePhotoForm(await client.html(edit),config.origin,session.profilePath),body=new FormData();
   for(const field of fields)body.append(field.name,field.value);body.append('imagemUpload',new File([bytes],file.name.replace(/[\r\n"\\]/g,'_').slice(0,120),{type}));
-  const landing=await client.html('/perfil/update',{method:'POST',body,photoUpdate:true,referer:edit});
+  stage='submit';const landing=await client.html('/perfil/update',{method:'POST',body,photoUpdate:true,referer:edit});
   if(client.lastPath===edit||hasPhotoForm(landing))throw new LegacyError('PHOTO_REJECTED','O portal original não confirmou a alteração da foto.');
-  const updated=await client.html(session.profilePath),path=parseProfilePhoto(updated,config.origin);
-  if(!path)throw new LegacyError('PHOTO_CONFIRMATION_REQUIRED','O envio foi recebido, mas a foto não pôde ser confirmada no perfil original.');
-  const avatar=await cacheOriginalPhoto(config,session,client,path);session.jar=client.jar;await store(owner,session);
-  return {avatar,message:'Foto atualizada no perfil original.'};
- }catch(error){if(error instanceof LegacyError&&error.code==='SESSION_EXPIRED')await env.DB!.prepare('UPDATE myid_legacy_session SET expires_at=0 WHERE owner_id=?').bind(owner).run();throw error;}
- finally{await release(owner);}
+  stage='confirmation';const updated=await client.html(session.profilePath),path=parseProfilePhoto(updated,config.origin);
+  if(!path)throw new LegacyError('PHOTO_CONFIRMATION_REQUIRED','A foto não foi encontrada no perfil após o envio.');
+  stage='image';const photo=await readOriginalPhoto(client,path);
+  const same=(a:Uint8Array,b:Uint8Array)=>a.length===b.length&&a.every((value,index)=>value===b[index]);
+  if(!same(photo.bytes,bytes)&&(!previous||same(photo.bytes,previous)))throw new LegacyError('PHOTO_CONFIRMATION_REQUIRED','O portal ainda retornou a foto anterior.');
+  const avatar=await cacheOriginalPhoto(config,session,client,path,photo);session.jar=client.jar;await store(owner,session);await record(true);
+  return {avatar,message:'Foto confirmada no perfil original.'};
+ }catch(error){
+  if(error instanceof LegacyError&&error.code==='SESSION_EXPIRED')await env.DB!.prepare('UPDATE myid_legacy_session SET expires_at=0 WHERE owner_id=?').bind(owner).run();
+  else if(client.trace.some(hop=>hop.method==='POST'&&hop.path==='/perfil/update')){
+   // A write can succeed before a broken redirect/confirmation. Never replay it.
+   // Reconcile only if the original now serves exactly the selected file.
+   try{const html=await client.html(session.profilePath),path=parseProfilePhoto(html,config.origin);if(path){const photo=await readOriginalPhoto(client,path);const equal=photo.bytes.length===bytes.length&&photo.bytes.every((value,index)=>value===bytes[index]);if(equal){const avatar=await cacheOriginalPhoto(config,session,client,path,photo);session.jar=client.jar;await store(owner,session);await record(true,'RECONCILED');return {avatar,message:'Foto confirmada no perfil original.',reconciled:true};}}}catch{}
+  }
+  if(!(error instanceof LegacyError&&error.code==='SESSION_EXPIRED')){session.jar=client.jar;await store(owner,session);}
+  await record(false,error instanceof LegacyError?error.code:'UNKNOWN');
+  if(error instanceof LegacyError&&['SESSION_EXPIRED','PROFILE_FORBIDDEN','PHOTO_REJECTED'].includes(error.code))throw error;
+  const failed=client.trace.findLast(hop=>hop.status>=400);const label:Record<string,string>={profile:'leitura do perfil',form:'leitura do formulário',submit:'envio da foto',confirmation:'confirmação',image:'leitura da imagem salva'};
+  throw new LegacyError('PHOTO_UPDATE_FAILED','Não foi possível confirmar a foto no portal original: '+label[stage]+(failed?' (HTTP '+failed.status+')':'')+'. A imagem exibida é apenas uma prévia.',502);
+ }
 }
 export async function inspectAcademic(owner:string,kind:string,enrollmentId?:string,lessonId?:string){
  if(!['profile','edit','photo','course','lesson'].includes(kind))throw new LegacyError('INSPECTION_INVALID','Inspeção inválida.',400);
@@ -103,7 +125,8 @@ export async function inspectAcademic(owner:string,kind:string,enrollmentId?:str
   const photoContract=['edit','photo'].includes(kind)?{action:'/perfil/update',method:'POST',enctype:'multipart/form-data',fields:profilePhotoForm(html,config.origin,session.profilePath).map(f=>f.name).concat('imagemUpload'),profileValidated:true}:undefined;
   const probes=[];if(kind==='photo')for(const method of ['HEAD','OPTIONS'] as const){const response=await client.request('/perfil/update',{method,photoUpdate:true,observe:true});probes.push({method,status:response.status,allow:response.headers.get('allow'),location:response.headers.get('location')?.split('?')[0]});await response.body?.cancel();}
   session.jar=client.jar;await store(owner,session);
-  return {kind,path,...evidence,photoContract,probes,trace:kind==='photo'?client.trace:undefined,checkedAt:now()};
+  const state=kind==='photo'?await config.db.prepare('SELECT document,revision FROM myedi_state WHERE owner_id=?').bind(session.accountKey).first<{document:string;revision:number}>():null;
+  return {kind,path,...evidence,photoContract,probes,trace:kind==='photo'?client.trace:undefined,lastAttempt:state?JSON.parse(state.document).connection?.lastPhotoAttempt:undefined,checkedAt:now()};
  }catch(error){if(error instanceof LegacyError&&error.code==='SESSION_EXPIRED')await env.DB!.prepare('UPDATE myid_legacy_session SET expires_at=0 WHERE owner_id=?').bind(owner).run();throw error;}
  finally{await release(owner);}
 }
@@ -135,9 +158,9 @@ export async function status(owner: string) {
   return { ...config, connected: true, ...progress(session) };
 }
 function progress(s: Session) { return { completed: s.completed, total: s.total, pending: s.queue.length, imported: s.imported,reused:s.reused||0, warnings: s.warnings.slice(-15), finishedAt: s.finishedAt || null, startedAt: s.startedAt }; }
-async function lease(owner: string) {
+async function lease(owner: string,duration=90000) {
   const config = configuration();
-  const result = await config.db.prepare('UPDATE myid_legacy_session SET locked_until=? WHERE owner_id=? AND locked_until<?').bind(Date.now()+90000,owner,Date.now()).run();
+  const result = await config.db.prepare('UPDATE myid_legacy_session SET locked_until=? WHERE owner_id=? AND locked_until<?').bind(Date.now()+duration,owner,Date.now()).run();
   if (!result.meta.changes){const current=await row(owner);if(!current?.sealed||current.expires_at<=Date.now())throw new LegacyError('SESSION_EXPIRED','Conecte sua conta MyID.',401);throw new LegacyError('SYNC_BUSY', 'Já existe uma operação em andamento. Aguarde alguns instantes.', 409);}
 }
 async function release(owner: string) { await env.DB!.prepare('UPDATE myid_legacy_session SET locked_until=0 WHERE owner_id=?').bind(owner).run(); }
