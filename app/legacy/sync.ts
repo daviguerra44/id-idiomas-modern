@@ -65,14 +65,15 @@ export async function originalAvatar(owner:string){
   const photo=await config.bucket.get(session.accountKey+'/avatar');return new Response(photo!.body,{headers:{'Content-Type':photo!.httpMetadata?.contentType||'image/jpeg','Cache-Control':'private, max-age=300','X-Content-Type-Options':'nosniff'}});
  }finally{await release(owner);}
 }
-export async function uploadOriginalAvatar(owner:string,file:File){
+export async function uploadOriginalAvatar(owner:string,file:File,expectedProfilePath?:string){
  if(file.size>5*1024*1024||!file.size)throw new LegacyError('PHOTO_SIZE','Escolha uma imagem de até 5 MB.',400);
  const bytes=new Uint8Array(await file.arrayBuffer()),type=imageType(bytes);if(!type)throw new LegacyError('PHOTO_FORMAT','Escolha uma imagem JPG, PNG ou WebP.',400);
  await load(owner);await lease(owner,240000);
- try{return await uploadPhotoLocked(owner,file,bytes,type);}finally{await release(owner);}
+ try{return await uploadPhotoLocked(owner,file,bytes,type,expectedProfilePath);}finally{await release(owner);}
 }
-async function uploadPhotoLocked(owner:string,file:File,bytes:Uint8Array<ArrayBuffer>,type:string){
+async function uploadPhotoLocked(owner:string,file:File,bytes:Uint8Array<ArrayBuffer>,type:string,expectedProfilePath?:string){
  const {config,session}=await load(owner),client=new LegacyClient(config.origin,session.jar,fetch,config.transportOrigin,config.allowHttp);let stage='profile';
+ if(expectedProfilePath&&session.profilePath!==expectedProfilePath)throw new LegacyError('PROFILE_FORBIDDEN','A conta conectada não corresponde ao perfil autorizado.',403);
  const record=async(saved:boolean,code?:string)=>updateAcademic(session.accountKey,s=>{s.connection??={};s.connection.lastPhotoAttempt={at:now(),saved,stage,code,trace:client.trace};});
  try{
   const profileHTML=await client.html(session.profilePath),edit=findProfileEditPath(profileHTML,config.origin,session.profilePath);
